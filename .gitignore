@@ -1,0 +1,6 @@
+*.so
+*.snai
+*.bak*
+nimcache/
+*.log
+factory/

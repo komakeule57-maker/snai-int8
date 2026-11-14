@@ -1,0 +1,38 @@
+# snai/gains-bestand
+
+```text
+snai/gains-bestand - ausgewertet, angelegt 2026-11-01, zuletzt 2026-11-05 14:32
+Frage: Wie verteilen sich tote Gains und Gewichtsgroessen ueber alle gespeicherten Modelle (Wunsch 2026-11-01: weggelagerte Modelle als Indizien)? Sie dient als Spurensuche fuer die FFN-Gains und die GradNorm-Reihen.
+Kriterium (festgelegt 2026-11-01 09:57, vor dem ersten Messwert):
+  BEOBACHTUNG, kein Urteil, kein Eingriff, nur Lesen vorhandener Dateien. Gemessen je .snai-Datei mit gradnorm/werkzeug/bestand.py: Anteil toter Gains (|g| < 0,05, wie quant_sonde und multistack) je Schicht fuer FFN und Attention sowie final, Mittel, Median, Max, Median v der Gains, RMS emb/qk/vo/ffn, RMS FFN-Gewichte je Schicht, adam_t, Geometrie. Geraet: Werte muessen auf c128sr s4 und s8 mit sonde_staende.php gleich sein, auf V5 und V6 mit dem echten Lader; Rot: abgeschnittene Datei, falsche Kennung, Gains auf 0 in einer Kopie. Nicht aufgenommen: ~/snai_pruef/ditto3 (Sperre), Papierkorb, Dateien juenger als 15 Minuten. Duplikate ueber Gain-Hash zaehlen einfach. Die Stichprobe ist nach Verfuegbarkeit gewachsen, nicht geplant: Laeufe sind ungleich oft vertreten und Rezepte aus dem Pfad nur teils ableitbar. Zusammenhaenge mit Breite, Tiefe, SR oder Rezept sind deshalb Hinweise fuer spaetere Eingriffe, keine Ursachen, und saatweise zu lesen.
+Baut auf: snai/merkmal-gains, snai/merkmal-gains-fp32, snai/merkmal-gains-fest, snai-evo/lese, snai/multistack-tiefe-512
+Darauf baut: snai/gains-archaeologie, snai/clipfix-gains, snai/gains-kanalindex
+Rezepte:
+  r488 [2026-11-01] rechner-a: find ~ -xdev (ohne snai_pruef/ditto3, Papierkorb, rot_bestand) -name '*.snai' -type f -print0 > bestand/liste_grim.bin; nice -n 19 ionice -c 3 python3 ~/snai_pruef/gradnorm/werkzeug/bestand.py < liste > bestand/grim.jsonl. vserver und rechner-b: Skript per ssh ueber stdin, nichts wird dort abgelegt, Ausgabe nach rechner-a bestand/<rechner>.jsonl. rechner-b erst nach Ende der Naht-Reihe (hoechstens ein Zusatzlauf).
+Messwerte (Groesse | Wert | Arm | Start | n):
+  Quelle: rechner-a ~/snai_pruef/gradnorm/bestand/rechner-b.jsonl (bestand.py, Fehlerkanal 6 Dateien magic: .lock, .growth, c++_base; stderr 0 Byte) zusammen mit grim, tg1, v4, cortex_grim; zweite Lesart per Kopie von bestand.py mit min/q10, Rot: .cortex.bak zeigt 50 % tot, min 0,0001. Beobachtung, keine Urteilsgroesse.
+  m7161 Dateien rechner-b gelesen | 9.457 von 9.463 | alle
+  m7162 Eindeutig nach Gain-Hash, alle Rechner | 36.530, davon neu rechner-b 5.491 | alle
+  m7163 Frueheste Datei, eine Schicht >=50 % tot, t>=5000, FP32 | 2026-10-18 d96L2 t 93.294 L1 88,5 % (proj_u_UF) | FP32
+  m7164 Frueheste Datei, eine Schicht >=50 % tot, int8 | 2026-10-12 12:29 d64L2 t 30.006 L0 53,1 % | int8
+  m7165 Anteil Dateien t>=5000 mit Schicht >=50 % tot | 2026-08 0 % (n 85 FP32, 55 int8); 2026-09 0 % (n 11 FP32, 83 int8); 2026-10 39,3 % FP32 (n 1.571), 17,3 % int8 (n 31.030) | je Monat
+  m7166 Verschmolzene .cortex/.apex, Juli/August, tot | 0 % in 33 von 34 eindeutigen (Ausnahme .cortex.bak Net2Net) | zweite Lesart
+  m7167 Verschmolzene .cortex/.apex, kleinster Gain | 0,81 bis 1,0, kein Kanal unter halbem Median | zweite Lesart
+  m7168 Laengste historische Laeufe, Prinzessin d256L3 | t 139.784 bis 166.607, 0 % tot, Mediane 0,61 / 1,03 / 1,44; Rezept LR 0,00005, WD 0,01 (run_finetune.sh) | sft_finetune
+  Quelle: grim.jsonl, knirps/proj_akk und proj_akk_k4 (Zelle 32/2/16, LR 0,001 konstant, WD 0,1, Saat 1/2/3), vorhandene Modelle aus snai/kopier-knirps-fenster-je-schritt. Beobachtung, keine Urteilsgroesse.
+  m7178 Median L0.rms_ffn bei gleicher Updatezahl rund 5.000 | 0,838 / 0,994 / 0,901 | N=1 |  | 3
+  m7179 Median L0.rms_ffn bei gleicher Updatezahl rund 5.000 | 0,844 / 0,852 / 0,860 | N=4 |  | 3
+  m7180 Tote Gains am Ende | 0 %, aber nur 869 bis 2.212 Updates | N=64 |  | 3
+Ergebnis e549 [2026-11-05 14:32]: beobachtung
+  Fazit: Abgeschlossen ohne Urteil, wie vorab festgelegt: Die Bestandsaufnahme liefert Hinweise, keine Ursache. Tote FFN-Gains (eine Schicht >= 50 % tot, t >= 5000) kommen im Bestand erst ab Oktober vor (int8 ab 2026-10-12, FP32 ab 2026-10-18; Oktober 17 % der int8- und 39 % der FP32-Dateien, August/September 0 %). Diese Grenze ist kein Engine-Datum: Vor Oktober liefen fast nur andere Rezepte (kurz, breit, sehr kleine LR), und am selben Engine-Stand trennt im Oktober allein die LR 0 % von 99,5 % tot. Verschmolzene Altmodelle (Juli/August) zeigen keinen toten Kanal (kleinster Gain 0,81), das Mitteln kann einzelne Ausfälle aber verdecken. Die Ursachenfrage wurde danach mit Eingriffen geklärt (LR treibt das Sterben: snai/ee-lr-spaet, snai/stell-lr-leiter), nicht mit diesem Bestand. Weitere Bestandsdaten (Drive, weiterer Rechner) würden daran nichts ändern; die Reihe wird deshalb geschlossen.
+  Offen: Altbestand (Drive, weiterer Rechner) nicht gelesen. Einzelne Drohnen vor dem Verschmelzen nicht prüfbar.
+Chronik (juengste 8 von 14, voll=True zeigt alle):
+  2026-11-01 10:19 2026-11-01, Hinweis: .cortex und .apex sind inhaltlich .snai. Die Suche nur nach *.snai hat diese Dateien uebersehen; das Rezept wird entsprechend erweitert (Inhalt per Kennung, *.heads und *.json nicht). 25 weitere Dateien auf rechner-a gelesen (bestand/cortex_grim.jsonl), Fehlerkanal leer: Juli und August V5, d256 und d512, L2 bis L6, FFN-Gains Median 0,96-1,12, tot 0 %, ausser princess_SFT_6a677c2deaab7.cortex.bak (L0/L1 je genau 50,0 % tot, Median 1,0, final 0,538) gegen .cortex einen Tag spaeter 0 %. t nur wo vorhanden 3.076-9.112, ausreichend trainiert fuer die Regel also nicht belegt. rechner-b (secured_models, experiments) nach Ende der Naht-Reihe.
+  2026-11-01 10:28 2026-11-01, Hinweis zum Altbestand: Alte Drohnen liefen meist 3, hoechstens 10 Epochen, wurden zu .cortex-Modellen verschmolzen und geloescht, diese wieder trainiert und verschmolzen. Folgen fuer die Auswertung: .cortex und .apex sind vorrangig, alte .snai nur Ausnahmen. adam_t und meine Lesart 'zu wenig Schritte' unterschaetzen die Trainingsgeschichte solcher Modelle (t 3.076-9.112 ist nicht die Lebensleistung). Verschmelzen kann tote Gains verdecken: Mitteln von toten und lebenden Kanaelen hebt sie ueber 0,05, ungeprueft. Die Vorab-Regel bleibt im Wortlaut; verschmolzene Modelle werden als zweite Lesart nebeneinander berichtet, Abstammung soweit aus Unterlagen ablesbar. Bleibt ein Gain dort trotz vieler Generationen bei rund 1, ist das wegen des Mittelns noch kein Beleg fuer fehlendes Kippen; aussagekraeftig waeren nur die seltenen laenger trainierten Drohnen vor dem Verschmelzen.
+  2026-11-01 11:45 Messwerte m7161-m7168
+  2026-11-01 11:45 Bestand rechner-b fertig. Grenze Oktober ist kein Engine-Datum: Fast alle Dateien vor Oktober stammen aus anderen Rezepten (kurz, breit oder sehr kleine LR), und am selben Stand im Oktober liegen 0 % und 99,5 % nur durch LR auseinander. Verdecken durch Mitteln: Dass die meisten Drohnen einen Kanal verloren haetten, ist ausgeschlossen (kleinster Gain 0,81); ein Ausfall einzelner Drohnen laesst sich ohne deren Zahl nicht ausschliessen. Offen: weiterer Altbestand (Drive, weiterer Rechner), Abgleich mit snai/gains-archaeologie.
+  2026-11-01 12:22 Datumssuche auf einmalige Freigabe (Arbeitsnotizen 8.-18.10. nur lesend, Notizen, datierte Kommentare, git): An den Tagen 12.10. und 18.10. liegt kein Umbau, der die erste Datei erklaert. 12.10. ist der erste Knirps-Lauf ueberhaupt, Kippen innerhalb desselben Laufs und derselben Lib; 18.10. ist der FP32-Test selbst. prod512 kippte schon ab 17.9. Kandidaten: Clip-Fix 18.8., ATTFIX 9.10., SR 18./19.10.
+  2026-11-01 12:41 Messwerte m7178-m7180
+  2026-11-05 14:32 Ergebnis e549: beobachtung
+  2026-11-05 14:32 Status laeuft -> ausgewertet (Ergebnis e549)
+```
