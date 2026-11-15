@@ -54,7 +54,7 @@ je Gewicht. Ihr kleinster Transformer ist ein ViT-Ti mit 5,36 Mio. Parametern, v
 - In der Vorgabe hält es je Gewicht einen **float32-Rundungsrest** (Fehlerrückführung) und ist in diesem Punkt
   weniger streng als [1] (siehe `cortex.nim`, Abschnitt FEHLER-RUECKFUEHRUNG). Mit `SNAI_I8_REST=sr` entfällt der
   Rest: Die Gewichte werden stochastisch gerundet, es gibt **keinen float-Begleitwert je Gewicht** mehr, und der
-  Puffer wird gar nicht erst angelegt (4 Byte je Gewicht gespart). Das kostet beim Knirps 96×2 rund 1 % Held-out
+  Puffer wird gar nicht erst angelegt (4 Byte je Gewicht gespart; auf der CPU geprüft). Das kostet beim Knirps 96×2 rund 1 % Held-out
   (+1,10 % gegen die Vorgabe, +0,96 % gegen float32, 3 Paare, in allen drei schlechter); eine Verzerrung der
   Rundung durch den Hash war in der Prüfung nicht messbar. → [sr-knirps-nachweis](docs/messreihen/sr-knirps-nachweis.md),
   [sr-hash-bias](docs/messreihen/sr-hash-bias.md)
@@ -67,7 +67,7 @@ veröffentlicht, und wir beanspruchen keinen Vorrang beim Ganzzahl-Training an s
 > SGD with momentum). snai-int8 differs in that it trains language models, goes below 1M parameters (a 0.37M model
 > matches a paired float32 PyTorch baseline on short stories), uses Adam with 8-bit moments, and by default keeps a float32
 > rounding residual per weight for error feedback, so it is less strict than [1] on that point. With
-> `SNAI_I8_REST=sr` the residual is dropped (stochastic rounding, no per-weight float state, 4 bytes per weight saved)
+> `SNAI_I8_REST=sr` the residual is dropped (stochastic rounding, no per-weight float state, 4 bytes per weight saved, verified on CPU)
 > at a cost of about 1 % held-out loss on the 0.37M model. To our knowledge
 > (literature search 2026-11-15), integer-only training of a language-model transformer has not been published.
 
