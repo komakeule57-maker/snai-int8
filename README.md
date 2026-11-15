@@ -36,6 +36,37 @@ und was sie ausdrücklich *nicht* beantwortet.
 Viele Reihen enden mit *verfehlt*, *gleichstand* oder *keine_aussage*. Sie stehen gleichberechtigt in der
 Übersicht: **[docs/MESSREIHEN.md](docs/MESSREIHEN.md)**.
 
+## Einordnung
+
+**Vollständiges Ganzzahl-Training ist für Bildmodelle bereits gezeigt, für Sprachmodelle nach unserem Stand
+(Literatursuche 2026-11-15) nicht.** Shalby, Pittorino und Roveri trainieren Gewichte, Gradienten, Momentum und
+Aktivierungen durchgehend in INT8, einschließlich Attention, Softmax, LayerNorm und GELU, ohne jeden float-Begleitwert
+je Gewicht. Ihr kleinster Transformer ist ein ViT-Ti mit 5,36 Mio. Parametern, von Grund auf trainiert auf CIFAR-10
+(88,0 % gegen 90,9 % in FP32), mit SGD und Momentum [1]. snai-int8 unterscheidet sich darin in vier Punkten:
+
+- Es trainiert **Sprachmodelle** (kausale Transformer auf Text) statt Bildklassifikatoren.
+- Es reicht **unter 1 Mio. Parameter**: Der Knirps 96×2 (rund 0,37 Mio. Parameter, Breite 96, 2 Schichten) erreicht
+  auf Kurzgeschichten im Ganzzahl-Stack dieselbe Held-out-Qualität wie ein gepaart trainiertes PyTorch-Modell in
+  float32 (+0,55 % zugunsten von snai-int8, Gleichstand, 3 Paare, 25.000 Schritte).
+  → [geschichten-pytorch](docs/messreihen/geschichten-pytorch.md)
+- Es nutzt **Adam mit 8-Bit-Momenten** statt SGD mit Momentum.
+- Es hält je Gewicht einen **float32-Rundungsrest** (Fehlerrückführung) und ist in diesem Punkt weniger streng als [1].
+  Ohne den Rest summieren sich die Rundungsfehler über tausende Schritte als Random Walk auf (siehe `cortex.nim`,
+  Abschnitt FEHLER-RUECKFUEHRUNG).
+
+Die Entwicklung der int8-Engine begann im März 2026, öffentlich ist sie seit dem 14.11.2026. [1] ist also früher
+veröffentlicht, und wir beanspruchen keinen Vorrang beim Ganzzahl-Training an sich.
+
+> *English:* Fully integer-only training has been shown for vision models [1] (INT8 weights, gradients, momentum and
+> activations, integer attention, no per-weight float state; smallest transformer ViT-Ti, 5.36M parameters, CIFAR-10,
+> SGD with momentum). snai-int8 differs in that it trains language models, goes below 1M parameters (a 0.37M model
+> matches a paired float32 PyTorch baseline on short stories), uses Adam with 8-bit moments, and keeps a float32
+> rounding residual per weight for error feedback, so it is less strict than [1] on that point. To our knowledge
+> (literature search 2026-11-15), integer-only training of a language-model transformer has not been published.
+
+[1] H. H. Y. Shalby, F. Pittorino, M. Roveri: *Memory-Efficient Integer-Only Training of Deep Neural Networks.*
+arXiv:2610.16298, 2026. https://arxiv.org/abs/2610.16298
+
 ## Arbeitsweise der Messungen
 
 - Das Kriterium für „besser/schlechter“ steht **vor** dem ersten gezählten Lauf fest. Wo es nachgetragen wurde, sagt
