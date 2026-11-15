@@ -12,17 +12,17 @@ license: Apache-2.0
 version: "0.0.1"
 date-released: "2026-11-15"
 abstract: >-
-  A research engine for training small transformer language models almost
-  entirely in integer arithmetic: int8 weights and activations, an integer
-  backward pass and gradient accumulation, and 8-bit Adam moments. With
-  SNAI_I8_REST=sr it trains without any per-weight floating-point state.
-  The engine is written in Nim with CPU (OpenMP), CUDA and OpenCL backends
-  that are bit-identical to the CPU reference. The repository also contains
-  the research log: measurement series, each with a pre-registered
-  criterion, recipe, raw values and verdict.
+  A research engine for int8 training of small transformer language models:
+  int8 weights, integer matmuls in forward and backward with int32 gradient
+  accumulation, and 8-bit Adam moments. Normalization, softmax, loss and the
+  optimizer update are still computed in float. With SNAI_I8_REST=sr there
+  is no per-weight floating-point state across steps. The engine is written
+  in Nim with CPU (OpenMP), CUDA and OpenCL backends that are bit-identical
+  to the CPU reference. The repository also contains the research log:
+  measurement series, each with a pre-registered criterion, recipe, raw
+  values and verdict.
 keywords:
   - int8 training
-  - integer-only training
   - quantized training
   - stochastic rounding
   - small language models

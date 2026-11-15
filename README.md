@@ -2,12 +2,13 @@
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24249038.svg)](https://doi.org/10.5281/zenodo.24249038)
 
-**Kleine Sprachmodelle vollständig in Ganzzahlen trainieren: int8-Gewichte, int8-Rückwärtsrechnung, 8-Bit-Adam-Momente.**
+**Kleine Sprachmodelle in int8 trainieren: int8-Gewichte, ganzzahlige Matrixmultiplikation vorwärts und rückwärts, 8-Bit-Adam-Momente.**
 Eine eigene Engine in Nim (CPU mit OpenMP, CUDA, OpenCL) mit schlanker PHP-Steuerung, dazu die Forschungsakte: jede
 Messreihe mit vorher festgelegtem Kriterium, Rezept, Messwerten und Urteil.
 
-> *English summary:* snai-int8 is a research engine for training small transformer language models almost entirely in
-> integer arithmetic (int8 weights and activations, integer backward pass and gradient accumulation, 8-bit Adam moments).
+> *English summary:* snai-int8 is a research engine for int8 training of small transformer language models: int8
+> weights, integer matmuls in forward and backward with int32 gradient accumulation, and 8-bit Adam moments.
+> Normalization, softmax, loss and the optimizer update are still computed in float.
 > The engine is written in Nim with CPU (OpenMP), CUDA and OpenCL backends that are bit-identical to the CPU reference.
 > The repository also contains the research log (413 measurement series, each with a pre-registered criterion, recipe,
 > raw values and verdict). Documentation is in German.
@@ -20,7 +21,7 @@ fp32-Fassung zum Ausprobieren ist die Distro [komakeule57-maker/SnAI](https://gi
 Die Zahlen stammen aus den verlinkten Messreihen. Jede nennt dort ihre Reichweite (Modellgröße, Saaten, Datensatz)
 und was sie ausdrücklich *nicht* beantwortet.
 
-- **Der vollständige Ganzzahl-Stack trainiert stabil.** Kleines Modell (dim 128, 2 Schichten): Der Abstand zu FP32
+- **Der int8-Stack (`SNAI_INT8_FULL`) trainiert stabil.** Kleines Modell (dim 128, 2 Schichten): Der Abstand zu FP32
   wächst über 14.700 Schritte und eine zweite Epoche an zwei Startpunkten nicht. Er kostet 0,16–0,23 nats bei einem um
   24,5 % kleineren Modell. → [int8-port](docs/messreihen/int8-port.md)
 - **Bei Breite 512 bleibt ein Pegelabstand, der nicht wächst.** 0,25 nats hinter FP32 nach 400 Schritten, ohne Trend.
@@ -40,38 +41,62 @@ Viele Reihen enden mit *verfehlt*, *gleichstand* oder *keine_aussage*. Sie stehe
 
 ## Einordnung
 
-**Vollständiges Ganzzahl-Training ist für Bildmodelle bereits gezeigt, für Sprachmodelle nach unserem Stand
-(Literatursuche 2026-11-15) nicht.** Shalby, Pittorino und Roveri trainieren Gewichte, Gradienten, Momentum und
-Aktivierungen durchgehend in INT8, einschließlich Attention, Softmax, LayerNorm und GELU, ohne jeden float-Begleitwert
-je Gewicht. Ihr kleinster Transformer ist ein ViT-Ti mit 5,36 Mio. Parametern, von Grund auf trainiert auf CIFAR-10
-(88,0 % gegen 90,9 % in FP32), mit SGD und Momentum [1]. snai-int8 unterscheidet sich darin in vier Punkten:
+**snai-int8 ist int8-Training, kein reines Ganzzahl-Training.** Die großen Rechnungen laufen ganzzahlig, ein Teil
+des Trainings rechnet weiter in float (Liste unten). Die nächstverwandte Arbeit ist das reine Ganzzahl-Training von
+Shalby, Pittorino und Roveri [1]: Gewichte, Gradienten, Momentum und Aktivierungen durchgehend INT8, dazu Attention,
+Softmax, LayerNorm, GELU und der Optimierer-Schritt ganzzahlig, float nur bei der Eingabewandlung und im
+Lernratenplan. Ihr kleinster Transformer ist ein ViT-Ti mit 5,36 Mio. Parametern, von Grund auf trainiert auf CIFAR-10
+(88,0 % gegen 90,9 % in FP32), mit SGD und Momentum. [1] ist damit **in fast allem ganzzahliger als snai-int8.**
+
+Worin snai-int8 sich unterscheidet:
 
 - Es trainiert **Sprachmodelle** (kausale Transformer auf Text) statt Bildklassifikatoren.
 - Es reicht **unter 1 Mio. Parameter**: Der Knirps 96×2 (rund 0,37 Mio. Parameter, Breite 96, 2 Schichten) erreicht
-  auf Kurzgeschichten im Ganzzahl-Stack dieselbe Held-out-Qualität wie ein gepaart trainiertes PyTorch-Modell in
-  float32 (+0,55 % zugunsten von snai-int8, Gleichstand, 3 Paare, 25.000 Schritte, Engine-Stand Oktober 2026;
-  mit dem Stand vom 15.11.2026 nachgemessen: 0,15 % zugunsten von snai-int8).
-  → [geschichten-pytorch](docs/messreihen/geschichten-pytorch.md), [sr-knirps-nachweis](docs/messreihen/sr-knirps-nachweis.md)
+  auf Kurzgeschichten mit dem int8-Stack dieselbe Held-out-Qualität wie ein gepaart trainiertes PyTorch-Modell in
+  float32 (Gleichstand, 3 Paare, 25.000 Schritte; mit dem Engine-Stand vom 15.11.2026 0,15 % zugunsten von snai-int8,
+  im Oktober 0,55 %). → [geschichten-pytorch](docs/messreihen/geschichten-pytorch.md),
+  [sr-knirps-nachweis](docs/messreihen/sr-knirps-nachweis.md)
 - Es nutzt **Adam mit 8-Bit-Momenten** statt SGD mit Momentum.
-- In der Vorgabe hält es je Gewicht einen **float32-Rundungsrest** (Fehlerrückführung) und ist in diesem Punkt
-  weniger streng als [1] (siehe `cortex.nim`, Abschnitt FEHLER-RUECKFUEHRUNG). Mit `SNAI_I8_REST=sr` entfällt der
-  Rest: Die Gewichte werden stochastisch gerundet, es gibt **keinen float-Begleitwert je Gewicht** mehr, und der
-  Puffer wird gar nicht erst angelegt (4 Byte je Gewicht gespart; auf der CPU geprüft). Das kostet beim Knirps 96×2 rund 1 % Held-out
-  (+1,10 % gegen die Vorgabe, +0,96 % gegen float32, 3 Paare, in allen drei schlechter); eine Verzerrung der
-  Rundung durch den Hash war in der Prüfung nicht messbar. → [sr-knirps-nachweis](docs/messreihen/sr-knirps-nachweis.md),
-  [sr-hash-bias](docs/messreihen/sr-hash-bias.md)
 
-Die Entwicklung der int8-Engine begann im März 2026, öffentlich ist sie seit dem 14.11.2026. [1] ist also früher
-veröffentlicht, und wir beanspruchen keinen Vorrang beim Ganzzahl-Training an sich.
+**Ganzzahlig** sind: int8-Gewichte (mit float-Skala je Zeile), die Matrixmultiplikationen vorwärts (int8 × int8 →
+int32) und rückwärts (int8-GEMM für den Eingangsgradienten), die Gradienten-Akkumulation (int32), K/V-Cache und
+FFN-Ein- und -Ausgang (int8 mit Skala je Position) und die Adam-Momente im Speicher (8 Bit, log-kodiert, Skala je
+Zeile).
 
-> *English:* Fully integer-only training has been shown for vision models [1] (INT8 weights, gradients, momentum and
-> activations, integer attention, no per-weight float state; smallest transformer ViT-Ti, 5.36M parameters, CIFAR-10,
-> SGD with momentum). snai-int8 differs in that it trains language models, goes below 1M parameters (a 0.37M model
-> matches a paired float32 PyTorch baseline on short stories), uses Adam with 8-bit moments, and by default keeps a float32
-> rounding residual per weight for error feedback, so it is less strict than [1] on that point. With
-> `SNAI_I8_REST=sr` the residual is dropped (stochastic rounding, no per-weight float state, 4 bytes per weight saved, verified on CPU)
-> at a cost of about 1 % held-out loss on the 0.37M model. To our knowledge
-> (literature search 2026-11-15), integer-only training of a language-model transformer has not been published.
+**Noch in float** sind:
+
+- der Gradientenpuffer (float32 je Gewicht, nur innerhalb eines Schritts gebraucht, aber dauerhaft angelegt),
+- der Adam-Schritt je Gewicht (Entquantisieren, Bias-Korrektur, Wurzel, Division, Weight Decay),
+- die Softmax der Attention (Q·K selbst läuft int32) und Logits/Cross-Entropy,
+- RMSNorm, RoPE und die Aktivierungen im Restpfad,
+- die RMSNorm-Gains samt ihren Momenten (beim Knirps 480 von 0,37 Mio. Parametern),
+- im Checkpoint die Adam-Momente (Format float32, Inhalt 8 Bit),
+- Skalare: Lernrate, β-Potenzen, Clip-Norm.
+
+Diese Teile sollen bis zum nächsten großen Release ganzzahlig werden.
+
+**Rundungsrest:** In der Vorgabe hält snai-int8 je Gewicht einen float32-Rundungsrest (Fehlerrückführung, siehe
+`cortex.nim`, Abschnitt FEHLER-RUECKFUEHRUNG). Mit `SNAI_I8_REST=sr` werden die Gewichte stochastisch gerundet, und
+der Rest-Puffer wird gar nicht erst angelegt (4 Byte je Gewicht gespart, auf der CPU geprüft). Über die Schritte
+hinweg gibt es dann keinen float-Zustand je Gewicht mehr; der Gradientenpuffer oben bleibt. Das kostet beim Knirps
+96×2 rund 1 % Held-out (+1,10 % gegen die Vorgabe, +0,96 % gegen float32, 3 Paare, in allen drei schlechter); eine
+Verzerrung der Rundung durch den Hash war in der Prüfung nicht messbar.
+→ [sr-knirps-nachweis](docs/messreihen/sr-knirps-nachweis.md), [sr-hash-bias](docs/messreihen/sr-hash-bias.md)
+
+Die Entwicklung der int8-Engine begann im März 2026, öffentlich ist sie seit dem 14.11.2026, [1] am 12.10.2026.
+Wir beanspruchen keinen Vorrang beim Ganzzahl-Training.
+
+> *English:* Integer-only training has been shown for vision models [1] (INT8 weights, gradients, momentum and
+> activations; integer attention, softmax, normalization and optimizer step; smallest transformer ViT-Ti, 5.36M
+> parameters, CIFAR-10, SGD with momentum). snai-int8 is int8 training, not integer-only training, and [1] is more
+> integer in almost every respect. snai-int8 differs in that it trains language models, goes below 1M parameters
+> (a 0.37M model matches a paired float32 PyTorch baseline on short stories) and uses Adam with 8-bit moments.
+> Integer in snai-int8: int8 weights with per-row float scales, forward and backward matmuls, int32 gradient
+> accumulation, 8-bit Adam moments in memory. Still float: a per-weight float32 gradient buffer, the per-weight Adam
+> update, attention softmax, logits and cross-entropy, RMSNorm, RoPE, residual activations, RMSNorm gains, and the
+> Adam moments as stored in the checkpoint. With `SNAI_I8_REST=sr` the per-weight float32 rounding residual is
+> dropped (no per-weight float state across steps; verified on CPU) at a cost of about 1 % held-out loss on the
+> 0.37M model.
 
 [1] H. H. Y. Shalby, F. Pittorino, M. Roveri: *Memory-Efficient Integer-Only Training of Deep Neural Networks.*
 arXiv:2610.16298, 2026. https://arxiv.org/abs/2610.16298
