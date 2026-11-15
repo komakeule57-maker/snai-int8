@@ -3409,7 +3409,7 @@ proc ensureAdamBigRow(cols: int) =
 # ---- REST-16 Messkopie (patch_rest.py) ----
 # SNAI_I8_REST: Rundungsrest der int8-Gewichte. HAUPTBAUM: Vorgabe 32 (float32-Rest, Rechnung wie vor dem Port).
 # sr = kein float32-Rest, Gewichte stochastisch gerundet (Vorgabe nur in multi_stack)
-# (spart auf der Karte 4 B/Param). Gemessen gegen 32 (float32-Rest wie vorher): Messbuch snai/multistack-rest-16,
+# (spart 4 B/Param, seit 2026-11-15 auch auf der CPU: allocI8ErrorFeedback legt bei sr keinen Puffer an). Gemessen gegen 32 (float32-Rest wie vorher): Messbuch snai/multistack-rest-16,
 # -rest-2048, -rest-2048vk, -sr-klein, -rest-4096 (e572), -rest-2048L4 (e592): Gleichstand, Nachteil waechst mit
 # der Tiefe nicht. 16/8/8h sind Messmodi ohne eigene Aussage (e552), 0 ist die Rot-Probe (lernt nicht).
 var restModus = -1          # -1 ungelesen, 32, 16, 8, 9 = 8h (Code ueber +-1/2 Stufe), 1 = sr, 0 = aus
@@ -3530,7 +3530,7 @@ proc adamRowFloatI8(qw: QMatrix, m, v, g, res: Matrix, row: int,
   # Ein fehlender Rest-Puffer hat den Mechanismus frueher lautlos abgeschaltet
   # und dabei einen Qualitaetsverlust verursacht, den erst ein Produktivlauf
   # sichtbar machte. Jetzt meldet er sich (siehe allocI8ErrorFeedback).
-  if i8_error_feedback != 0 and res.data.isNil: fbMissingSeen = true
+  if i8_error_feedback != 0 and res.data.isNil and restModus != 1: fbMissingSeen = true   # sr: fehlender Puffer gewollt
   # REST-16: Codemodus, Faktoren, Seitentabelle, lokale Zaehler
   let rCode = useFb and (restModus == 16 or restModus == 8 or restModus == 9)
   let rFak: cfloat = (if restModus == 16: 32767.0 elif restModus == 9: 254.0 else: 127.0)
@@ -3911,7 +3911,7 @@ proc gpuAdamRows(qw: QMatrix, g, res: Matrix, lr, b1, b2, b1t, b2t, gscale: cflo
     stderr.writeLine("[REST] libcortex_cuda.so ohne cuda_adamRowQI8Rest - Abbruch"); quit(1)
   let useFb = i8_error_feedback != 0 and not res.data.isNil and restModus != 1 and restModus != 0
   let rCodeG = useFb and (restModus == 16 or restModus == 8 or restModus == 9)
-  if i8_error_feedback != 0 and res.data.isNil: fbMissingSeen = true
+  if i8_error_feedback != 0 and res.data.isNil and restModus != 1: fbMissingSeen = true   # sr: fehlender Puffer gewollt
   let lrX = (if gaRot == 1: lr * 1.0001'f32 else: lr)
   # SR (2026-10-19): mit dem SR-Symbol rechnet die Karte dieselbe Rundung wie qmomStoreRow (Maske, Salz srSalt).
   let gdOn = gdReady.getOrDefault(cast[pointer](g.data), false)
@@ -4276,6 +4276,9 @@ proc allocI8ErrorFeedback(state: ptr CortexState) =
   let hasAdam = (not state.m_embeddings.data.isNil) or
                 (state.quantAdam != 0 and not state.mq_embeddings.data.isNil)
   if not hasAdam: return
+  # SNAI_I8_REST=sr: kein float32-Rest je Gewicht, also auch kein Puffer (spart 4 B je requantisiertem Gewicht;
+  # docs/messreihen/sr-knirps-nachweis.md, bytegleich). Modus hier still lesen: restLies() schreibt auf stdout.
+  if (if restModus >= 0: restModus == 1 else: getEnv("SNAI_I8_REST") == "sr"): return
   state.res_embeddings = allocMatrix(state.embeddings_q8.rows, state.embeddings_q8.cols)
   # Bei Tying gibt es nur EINEN Rest-Puffer, weil es nur EINEN Adam-Schritt
   # gibt (applyGlobalAdamUpdateI8 ueberspringt w_out). Ein zweiter waere nicht

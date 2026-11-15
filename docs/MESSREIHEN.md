@@ -2,7 +2,7 @@
 
 Jede Reihe hat eine Frage, ein vor dem ersten gezählten Lauf festgelegtes Kriterium (wo nachgetragen, steht das in der Reihe),
 das Rezept zum Wiederholen, die Messwerte und ein Urteil mit Fazit. Urteile: erfuellt, teilweise, verfehlt, gleichstand,
-keine_aussage, ungueltig, beobachtung (ohne Kriterium vorab). Stand des Auszugs: 2026-11-13, 413 Reihen, nur ausgewertete
+keine_aussage, ungueltig, beobachtung (ohne Kriterium vorab). Stand des Auszugs: 2026-11-13, 413 Reihen, ergänzt 2026-11-15 um zwei SR-Reihen, nur ausgewertete
 oder ruhende Reihen des int8-Hauptzweigs. Rechnernamen sind neutralisiert (siehe README).
 
 | Beginn | Reihe | Urteil | Frage |
@@ -420,3 +420,5 @@ oder ruhende Reihen des int8-Hauptzweigs. Rechnernamen sind neutralisiert (siehe
 | 2026-11-13 | [snai/ocl-sn2-rusticl](messreihen/ocl-sn2-rusticl.md) | erfuellt | Machen exakte Nullen im float-Kurzweg, Adam über die Kurzwege (SN_ADAM) und geprüfte native Division/Wurzel (SN_DIV) unter rusticl die Wege V und G schneller als die Hauptbaum-Lib b4a04047, und wie steht V gegen G dan… |
 | 2026-11-13 | [snai/ocl-umbau-tempo](messreihen/ocl-umbau-tempo.md) | erfuellt | Ist der OpenCL-Pfad mit den vier Umbauten zusammen (Kachel-Vorwärtskern, Map statt Kopie, int8-Punktprodukt, Division nur wo nötig) je Plattform (ROCm, rusticl) auf rechner-a schneller als der jetzige Stand c553f412? … |
 | 2026-11-13 | [snai/rocm-tempo-grim](messreihen/rocm-tempo-grim.md) | verfehlt | Rechnet ROCm-OpenCL (7.2.4) auf der Renoir-iGPU von rechner-a bei gleichem Rechenweg schneller als rusticl, und ist der beste ROCm-Weg schneller als die CPU? |
+| 2026-11-15 | [snai/sr-hash-bias](messreihen/sr-hash-bias.md) | erfuellt | Rundet das stochastische Runden der int8-Gewichte (SNAI_I8_REST=sr, Hash restSrU) im Mittel ohne Verzerrung, oder bringt der Hash ein Muster und damit eine schleichende Verschiebung? |
+| 2026-11-15 | [snai/sr-knirps-nachweis](messreihen/sr-knirps-nachweis.md) | erfuellt | Hält der Ganzzahl-Stack des Hauptbaums ohne float32-Rest je Gewicht (SNAI_I8_REST=sr, stochastisches Runden) beim Knirps 96×2 auf den Nano-Geschichten die Qualität von float32 und des Stacks mit Rest, und spart er den Rest-Speicher wirklich? |

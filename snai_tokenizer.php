@@ -21,11 +21,16 @@ class SnaiTokenizer {
     private $cache = [];
     private $byte_ids = null;
     private $byte_of_id = [];
+    private $wortweise = false;
     
     // Wir nutzen die Hex-Repräsentation von U+2581 für absolute Sicherheit in PHP
     private const META_SPACE = "\xE2\x96\x81"; 
 
     public function __construct(string $vocab_file = 'symbio_vocab.json') {
+        // KNIRPS 2026-10-12: SNAI_VOCAB=<datei> waehlt ein anderes Vokabular, fuer alle
+        // Aufrufer zugleich (jeder geht ueber diesen Konstruktor). Leer/ungesetzt = wie bisher.
+        $knirps_vocab = getenv('SNAI_VOCAB');
+        if ($knirps_vocab !== false && $knirps_vocab !== '') $vocab_file = $knirps_vocab;
         if (!file_exists($vocab_file)) {
             { fwrite(STDERR, "🚨 FATAL: Tokenizer-Datei '$vocab_file' fehlt. Führe erst bpe_gen.py aus.\n"); exit(1); } // Code-Review 2026-11-05: die() gab Exitcode 0
         }
@@ -39,6 +44,8 @@ class SnaiTokenizer {
         
         $this->vocab = $data['model']['vocab'];
         $this->inverse_vocab = array_flip($this->vocab);
+        // KNIRPS 2026-10-12: "WordLevel" = ein Wort, ein Token (kein BPE).
+        $this->wortweise = (($data['model']['type'] ?? '') === 'WordLevel');
 
         // Byte-Rueckfall nur, wenn das Vokabular alle 256 Byte-Token traegt.
         if (isset($this->vocab['<0x00>'])) {
@@ -193,7 +200,13 @@ class SnaiTokenizer {
             
             foreach ($matches[0] as $chunk) {
                 if ($chunk === '') continue;
-                $bpe_str = $this->bpe($chunk);
+                if ($this->wortweise) {
+                    // Wort direkt nach einem Zeilenumbruch kommt ohne Leerzeichen-Marke an
+                    $bpe_str = (!isset($this->vocab[$chunk]) && isset($this->vocab[self::META_SPACE . $chunk]))
+                        ? self::META_SPACE . $chunk : $chunk;
+                } else {
+                    $bpe_str = $this->bpe($chunk);
+                }
                 $bpe_parts = explode(' ', $bpe_str);
                 foreach ($bpe_parts as $bpe_part) {
                     if (isset($this->vocab[$bpe_part])) {

@@ -47,12 +47,17 @@ je Gewicht. Ihr kleinster Transformer ist ein ViT-Ti mit 5,36 Mio. Parametern, v
 - Es trainiert **Sprachmodelle** (kausale Transformer auf Text) statt Bildklassifikatoren.
 - Es reicht **unter 1 Mio. Parameter**: Der Knirps 96×2 (rund 0,37 Mio. Parameter, Breite 96, 2 Schichten) erreicht
   auf Kurzgeschichten im Ganzzahl-Stack dieselbe Held-out-Qualität wie ein gepaart trainiertes PyTorch-Modell in
-  float32 (+0,55 % zugunsten von snai-int8, Gleichstand, 3 Paare, 25.000 Schritte).
-  → [geschichten-pytorch](docs/messreihen/geschichten-pytorch.md)
+  float32 (+0,55 % zugunsten von snai-int8, Gleichstand, 3 Paare, 25.000 Schritte, Engine-Stand Oktober 2026;
+  mit dem Stand vom 15.11.2026 nachgemessen: 0,15 % zugunsten von snai-int8).
+  → [geschichten-pytorch](docs/messreihen/geschichten-pytorch.md), [sr-knirps-nachweis](docs/messreihen/sr-knirps-nachweis.md)
 - Es nutzt **Adam mit 8-Bit-Momenten** statt SGD mit Momentum.
-- Es hält je Gewicht einen **float32-Rundungsrest** (Fehlerrückführung) und ist in diesem Punkt weniger streng als [1].
-  Ohne den Rest summieren sich die Rundungsfehler über tausende Schritte als Random Walk auf (siehe `cortex.nim`,
-  Abschnitt FEHLER-RUECKFUEHRUNG).
+- In der Vorgabe hält es je Gewicht einen **float32-Rundungsrest** (Fehlerrückführung) und ist in diesem Punkt
+  weniger streng als [1] (siehe `cortex.nim`, Abschnitt FEHLER-RUECKFUEHRUNG). Mit `SNAI_I8_REST=sr` entfällt der
+  Rest: Die Gewichte werden stochastisch gerundet, es gibt **keinen float-Begleitwert je Gewicht** mehr, und der
+  Puffer wird gar nicht erst angelegt (4 Byte je Gewicht gespart). Das kostet beim Knirps 96×2 rund 1 % Held-out
+  (+1,10 % gegen die Vorgabe, +0,96 % gegen float32, 3 Paare, in allen drei schlechter); eine Verzerrung der
+  Rundung durch den Hash war in der Prüfung nicht messbar. → [sr-knirps-nachweis](docs/messreihen/sr-knirps-nachweis.md),
+  [sr-hash-bias](docs/messreihen/sr-hash-bias.md)
 
 Die Entwicklung der int8-Engine begann im März 2026, öffentlich ist sie seit dem 14.11.2026. [1] ist also früher
 veröffentlicht, und wir beanspruchen keinen Vorrang beim Ganzzahl-Training an sich.
@@ -60,8 +65,10 @@ veröffentlicht, und wir beanspruchen keinen Vorrang beim Ganzzahl-Training an s
 > *English:* Fully integer-only training has been shown for vision models [1] (INT8 weights, gradients, momentum and
 > activations, integer attention, no per-weight float state; smallest transformer ViT-Ti, 5.36M parameters, CIFAR-10,
 > SGD with momentum). snai-int8 differs in that it trains language models, goes below 1M parameters (a 0.37M model
-> matches a paired float32 PyTorch baseline on short stories), uses Adam with 8-bit moments, and keeps a float32
-> rounding residual per weight for error feedback, so it is less strict than [1] on that point. To our knowledge
+> matches a paired float32 PyTorch baseline on short stories), uses Adam with 8-bit moments, and by default keeps a float32
+> rounding residual per weight for error feedback, so it is less strict than [1] on that point. With
+> `SNAI_I8_REST=sr` the residual is dropped (stochastic rounding, no per-weight float state, 4 bytes per weight saved)
+> at a cost of about 1 % held-out loss on the 0.37M model. To our knowledge
 > (literature search 2026-11-15), integer-only training of a language-model transformer has not been published.
 
 [1] H. H. Y. Shalby, F. Pittorino, M. Roveri: *Memory-Efficient Integer-Only Training of Deep Neural Networks.*
