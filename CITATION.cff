@@ -1,7 +1,7 @@
 cff-version: 1.2.0
 message: "If you use snai-int8 or its measurement series, please cite it as below."
 type: software
-title: "snai-int8: integer training of small transformer language models"
+title: "snai-int8: int8 training of small transformer language models"
 authors:
   - given-names: Sebastian
     family-names: Woratsch
@@ -9,7 +9,7 @@ authors:
 repository-code: "https://github.com/komakeule57-maker/snai-int8"
 url: "https://github.com/komakeule57-maker/snai-int8"
 license: Apache-2.0
-version: "0.0.2"
+version: "0.0.3"
 date-released: "2026-11-15"
 abstract: >-
   A research engine for int8 training of small transformer language models:
