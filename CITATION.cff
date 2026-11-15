@@ -9,7 +9,7 @@ authors:
 repository-code: "https://github.com/komakeule57-maker/snai-int8"
 url: "https://github.com/komakeule57-maker/snai-int8"
 license: Apache-2.0
-version: "0.0.1"
+version: "0.0.2"
 date-released: "2026-11-15"
 abstract: >-
   A research engine for int8 training of small transformer language models:
