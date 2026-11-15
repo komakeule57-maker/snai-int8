@@ -1,5 +1,7 @@
 # snai-int8
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24249038.svg)](https://doi.org/10.5281/zenodo.24249038)
+
 **Kleine Sprachmodelle vollständig in Ganzzahlen trainieren: int8-Gewichte, int8-Rückwärtsrechnung, 8-Bit-Adam-Momente.**
 Eine eigene Engine in Nim (CPU mit OpenMP, CUDA, OpenCL) mit schlanker PHP-Steuerung, dazu die Forschungsakte: jede
 Messreihe mit vorher festgelegtem Kriterium, Rezept, Messwerten und Urteil.
