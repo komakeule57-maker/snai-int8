@@ -1,0 +1,50 @@
+snai/fullint8-st6-att: Kriterien, festgelegt 2026-11-15 vor den gezaehlten Laeufen (PLAN.md Abschnitt 8, ZIEL.md).
+Frage: Rechnen die Quantisierung von q, k, v, die Scores, die Softmax, der Attention-Ausgang und der Rueckwaerts (dq,
+dk, dv) mit SNAI_I8_GZ_ATT=1 ohne Gleitkomma, mindestens so genau wie die alte float32-Fassung (gegen float64 bei
+gleichem Eingang) und ohne Qualitaetsverlust gegen Stufe 5?
+Aufbau: proj_gz/st6 = Hauptbaum 1a8edde + patch_s0.py + patch_gz.py ed29d20f + cortex_gz.nim (Stand beim Start im Messbuch-Rezept; nach Pruefer um die Skalenpruefung ergaenzt)
+(cortex.nim 624d543d). Rauchtest vor diesen Kriterien (nicht gezaehlt): T6 laeuft (232 Schritte), T6 mit ATT=0 =
+Stufe 5 (8239bb67).
+Entwurf (cortex_gz.nim, Abschnitt "Stufe 6"): Code = round(m*127/max) ganzzahlig (Halbe weg von null, wie round in
+quantizeActivation), Skala max/127 als Mantisse < 2^31 + Exponent. Scores acc*kS_t (acc ganzzahlig wie bisher) auf
+gemeinsames 31-Bit-Raster je (p, Kopf); y = (sc_max - sc_t) * log2(e)/sqrt(hs) in Q32 (log2(e) als Q30-Konstante,
+1/sqrt(hs) = isqrt(2^60 div hs)); 2^(-y) per Q40-Tabelle (4096 Stuetzstellen, einmal in float64 im Modus "naechster",
+Ausnahme a), Wahrscheinlichkeiten Q30. Ausgang und gQ je Zeile auf gemeinsamem Exponenten (Kopfsummen < 2^61);
+gK, gV ueber die Positionen in int64 auf festem Raster je Tensor aus der Schranke act * max|Beitrag|.
+Vergleichswerkzeug: SNAI_GZ_ATTVGL=t rechnet dieselbe Attention in float64 (q exakt quantisiert, k/v mit den Codes
+und Skalen des GZ-Laufs, also gleicher Eingang) und den alten float32-Weg auf Kopien.
+Aktive Nebenmechanismen wie Stufe 5.
+
+K1 Kontrolle (Kurzlauf, isoliert, 2 Faeden): Stufe-6-Lib SNAI_I8_GANZ=0..5 = 0f79d04c / 47176fa4 / 12e40925 /
+   6f382e75 / ac0be686 / 8239bb67; GANZ=6 + ATT=0 = 8239bb67; GANZ=5 + ATT=1 = GANZ=6; Stufe 6 zweimal gleich,
+   1 Faden = 2 Faeden. Dazu grob (Lauffaehigkeit, wie snai/fullint8-schalter B): GANZ=1 + ATT=1 laeuft, Loss
+   innerhalb +-2 % von GANZ=6.
+K2 Bausteinprobe (SNAI_GZ_KERN=1, GANZ=6, erster Schritt): je Schicht quant-k, quant-v, att-fwd, att-prob,
+   att-bw-dq, att-bw-dk, att-bw-dv und alle Zeilen der Stufen 2-5 unter FE_UPWARD und FE_TONEAREST bytegleich;
+   die 2^-x-Tabelle wird vor jedem der beiden Vorwaerts-Laeufe neu gebaut.
+   Rot 1 (SNAI_GZ_KERN_ROT=1: float32-Rundung in der k/v-Skala, in tb[0] der Wahrscheinlichkeiten und von dq):
+   mind. je eine quant-, att-fwd- und att-bw-dq-Zeile ABWEICHEND.
+   Rot 2 (SNAI_GZ_KERN_ROT=2: Tabellen ohne festen Modus in float32 gebaut): mind. eine att-fwd- oder att-prob-Zeile
+   ABWEICHEND, matfwd/matbw/norm/adam/quant-Zeilen dabei gleich.
+K3 Genauigkeit bei gleichem Eingang (SNAI_GZ_ATTVGL=t, Lesart B), bei t = 1, 150 (Kurzlauf) und 3000 (Segment 0, s1):
+   - relL2 Ganzzahl gegen float64 <= 1e-6 fuer att-fwd, att-bw-dq, att-bw-dk, att-bw-dv in beiden Schichten;
+   - Codes der Quantisierung (k, v) gleich den float64-Codes in >= 99,999 % (erwartet: alle);
+   - Skalen der Quantisierung (k, v) gegen das exakte max/127 rel. <= 1e-8 (nach Pruefer-Hinweis: die Referenz
+     uebernimmt Codes und Skalen von k/v, ein Skalenfehler fiele sonst nicht auf);
+   float32 nur berichtet. Rot (SNAI_GZ_ATTVGL_ROT=1, Referenz um 1e-5 verschoben, Referenzcodes aus x*127/max*(1+1e-3)),
+   t = 1: jede att-Zeile > 1e-6 und die Codezaehlung < 99,999 %. Rot der Skalenpruefung: SNAI_GZ_ATTVGL=1 zusammen mit
+   SNAI_GZ_KERN=1 SNAI_GZ_KERN_ROT=1 (float32-Rundung der Skala): Skala rel. > 1e-8.
+K3b Gradienten gegen den alten float32-Pfad (SNAI_GZ_VERGL=1, GANZ=6, erster Schritt; Plausibilitaet): je Tensor
+   relL2 <= 0,05, cos >= 0,995. Rot (SNAI_GZ_VERGL_ROT=1): g_w_o[0] verfehlt.
+K4 Qualitaet: Segment 0, Saaten s1-s3 gepaart, Held-out 300 Fenster; d = (st6 - st5)/st5 <= +2 % in 3 von 3, sonst
+   Haltepunkt. |d| < 10 % ist Gleichstand und das erwartete Ergebnis.
+K5 Messgeraet: Saettigungen, NET2NET-GUARD, STEPS_DONE=5001 in jedem K4-Lauf vor dem Urteil.
+Laufzeit berichtet, kein Kriterium.
+Pruefer (Zweitmeinung 15.11., Code und Aufbau, Gemini/Mistral): Code-Einwaende einzeln gegen den Quelltext geprueft,
+keiner haelt (swq-Massstab: P ist Q30, sw >> 30 hat den Massstab von DW; int ist 64 Bit; die Schluesselskala steht in
+G = ds * ksM; sE folgt aus v = mx * 2^31 / 127). Aufbau: uebernommen die Skalenpruefung (aus Geminis Frage nach der
+Codezaehlung abgeleitet); verworfen: 'Schwelle 1e-6 lockern' (Schwelle wie Stufen 3-5, Entscheidung Lesart B),
+'cos und relL2 widerspruechlich' (beide muessen gelten), 'Rot belegt nur die Referenz' (Rot belegt, dass der Vergleich
+anschlagen kann; die Korrektheit belegt K3 selbst gegen eine unabhaengige float64-Rechnung).
+Urteil: erfuellt = K1-K5. Saaten 3, Regel 3 von 3; bei Uneinigkeit: saatabhaengig, kein Schluss.
+Reichweite: Knirps 96x2, ein Datensatz (Nano-Geschichten), CPU, 2 Faeden.

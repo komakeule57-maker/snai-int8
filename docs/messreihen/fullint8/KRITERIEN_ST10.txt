@@ -1,0 +1,54 @@
+snai/fullint8-st10-ckpt: Kriterien, festgelegt 2026-11-15 vor den gezaehlten Laeufen (PLAN.md S9, ZIEL.md README-Liste).
+Frage: Schreibt die Engine mit SNAI_I8_GZ_CKPT=1 die Adam-Momente der int8-Matrizen als 8-Bit-Code plus Zeilenskala
+(SNAI_V8) statt als float32, so dass Speichern und Laden nichts mehr rechnen (unabhaengig vom Rundungsmodus), der Zustand
+den Weg ueber die Datei unveraendert uebersteht, V6/V7 unveraendert bleiben und kein Leser eine V8-Datei still falsch
+liest?
+Aufbau: proj_d10/st10 = Hauptbaum 1a8edde + patch_s0.py + patch_gz.py ed29d20f + patch_v8.py (cortex.nim b9263995)
++ cortex_gz.nim 20bad39c, Lib 969a56ee (bau10); PHP = patch_lr.py + patch_v8php.py (tensor_io.php, tensor_ffi_adapter.php,
+train_worker.php, train_cluster.php, eval_held_out_i8.php). Werkzeuge: v8_rundweg.php (laedt wie train_worker.php nativ
+mit 8-Bit-Momenten und speichert sofort), probe_iso_basis.sh (= probe_iso_wd.sh + PROBE_BASIS), Pruefwerkzeug
+SNAI_GZ_IO_RUNDUNG=auf|ab|null (Speichern und Laden in diesem Modus).
+Entwurf: V8 = Kopf wie V7 (Flags-Feld immer; Bit 0 Bindung, Bit 1 Embedding-Eingang), Rumpf wie V6/V7 bis auf die Momente
+der int8-Matrizen: je Moment [uint16 Zeilen][Zeilenskalen float32][Codes uint8] = die Darstellung im Speicher, nur
+kopiert. Gain-Momente bleiben float32 (Inhalt ganzzahlig gebildet, Stufe 3). Lesen von V8 immer (Nim-Lader); in PHP nimmt
+V8 nur an, wer nativ ueber Nim laedt (snai_is_int8_ladbar); snai_is_int8_magic() bleibt V6/V7, damit Leser, die Momente
+als float32 parsen, V8 laut ablehnen (Audit aller Leser 15.11.: sonst fiele V8 u. a. im Merge mehrerer Worker still in den
+V5-Pfad). SnaiCortexBridge laedt V8 immer nativ und mit 8-Bit-Momentspeicher (die Messskripte fragen snai_is_int8_magic).
+Merge: ein Worker = Kopie; mehrere Worker mit V8 = Abbruch (kein ganzzahliger Merge).
+Abhaengigkeit: wie alle Stufen nur das Geruest (Schalter wirkt nur mit SNAI_I8_GANZ >= 1); schreibbar nur mit 8-Bit-Momenten
+(sonst V6/V7 mit Meldung).
+Rauchtest vor diesen Kriterien (nicht gezaehlt, Lib 969a56ee): GANZ=9 = 201f5494 (V7); GANZ=10 schreibt V8 (1,14 statt
+3,31 MB); V8->V8 bytegleich, V8->V7 = die V7-Datei desselben Laufs, V7->V7 bytegleich; Rundung auf/ab/null: V8->V8 gleich,
+V7->V7 abweichend; Fortsetzung aus V7 = aus V8 (389a20ff); mess_text.php auf V8 = auf V7 (nach Adapter-Nachbesserung:
+V8 braucht den 8-Bit-Momentspeicher, die erste Fassung lehnte im Messskript laut ab).
+
+K1 Kontrolle (Kurzlauf, isoliert): Stufe-10-Lib + V8-PHP: GANZ=0..9 = 0f79d04c / 47176fa4 / 12e40925 / 6f382e75 /
+   ac0be686 / 8239bb67 / 39c71b8a / 0b208b49 / 278e3d14 / 201f5494; GANZ=10 + CKPT=0 = 201f5494; GANZ=9 + CKPT=1 = GANZ=10;
+   GANZ=10 zweimal gleich, 1 Faden = 2 Faeden; Vertraeglichkeit: Stufe-9-Lib + V8-PHP GANZ=9 = 201f5494; Stufe-10-Lib +
+   Stufe-9-PHP GANZ=9 = 201f5494; GANZ=1 + CKPT=1 schreibt V8, und dessen V7-Fassung (v8_rundweg, GANZ=0) = 47176fa4.
+K2 Zustand ueber die Datei: (a) V8 -> laden -> V8 bytegleich; (b) V8 -> laden -> V7 = V7-Datei desselben Laufs (GANZ=10
+   gegen GANZ=9); (c) Fortsetzung (Kurzlauf, GANZ=10) aus V8 = aus V7 desselben Zustands, bytegleich; (d) mess_text.php:
+   V8 und V7 desselben Zustands gleiche Werte (loss, rang0, uni, bi, tri); (e) eval_held_out_i8.php laedt V8 (rc 0) und
+   misst denselben Wert wie fuer V7.
+K3 Rundungsmodus beim Speichern und Laden (SNAI_GZ_IO_RUNDUNG = auf, ab, null): V8 -> V8 bytegleich zu "naechster" in
+   allen drei Modi. Rot: V7 -> V7 (alter Weg: Skala * Tabellenwert in float beim Schreiben, Neukodieren beim Lesen) weicht
+   in mindestens einem Modus ab.
+K3b Laut statt still: eine V8-Datei an Leser ohne V8-Weg: load_v6_model_full() -> null mit Meldung; export_int8_deployment()
+   -> false mit Meldung; cortex_load_stream_i8 ohne 8-Bit-Momentspeicher -> NULL mit Meldung; train_cluster.php mit
+   2 Workern und GANZ=10 -> Abbruch beim Merge mit Meldung, rc != 0. Rot dieser Probe: dieselben Aufrufe mit der V7-Datei
+   desselben Laufs gelingen (der Aufbau kann also Erfolg von Ablehnung unterscheiden).
+K4 Qualitaet ueber eine Segmentgrenze: zwei Segmente (seg0 + seg1, 10.002 Schritte), s1-s3 gepaart; st10 (GANZ=10, V8 an
+   der Grenze) gegen st9 (GANZ=9, V7 an der Grenze, Segment 0 aus der K4-Reihe snai/fullint8-st9-lrplan); Held-out nach
+   Segment 1: d = (st10 - st9)/st9 <= +2 % in 3 von 3, sonst Haltepunkt; |d| < 10 % Gleichstand. Zusaetzlich berichtet:
+   ist die V7-Fassung des st10-Endstands bytegleich zum st9-Endstand (dann gilt der V7-Weg an dieser Grenze als verlustfrei)?
+K5 Messgeraet: STEPS_DONE je Segment 5001, NET2NET-GUARD, Saettigungen, Wachenbericht LR-Plan, Magic der Segmentdateien
+   (st10 V8, st9 V7), mess.jsonl ohne Fehlerzeile.
+Dateigroesse und Laufzeit berichtet, kein Kriterium.
+Pruefer (Zweitmeinung 15.11., Code und Aufbau; Gemini ohne Befund, ihm fehlte der uebrige Kopf): Mistrals Einwaende gegen
+den Quelltext geprueft, keiner haelt: 'isV7 schliesst V8 ein' (isV7 steuert im Lader nur Flags-Feld und Kopfgroesse, alles
+Weitere haengt an isV8); 'Zeilenzahl gegen die Matrix ungeprueft' (qr != qv.rows und count != rows*cols -> Abbruch);
+'Ueberlauf beim Ueberspringen' (qr <= 65535, int64); 'Geometrie vertauscht' (Byte-Bilanz gegen die Dateigroesse vor dem
+Lesen); 'Skalenzahl ungeprueft' (dieselbe qr-Pruefung).
+Urteil: erfuellt = K1-K5. Saaten 3, Regel 3 von 3; bei Uneinigkeit: saatabhaengig, kein Schluss.
+Reichweite: Knirps 96x2 gebunden (V8 mit Flag-Bit 0); ungebunden nur ueber den Code, nicht gemessen. CPU. Nicht V8-faehig
+und ausdruecklich offen: Merge mehrerer Worker, load_v6_model_full, Export, Destillerie, Inferenz-Skripte, Diagnose-Skripte.

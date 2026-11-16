@@ -1,0 +1,47 @@
+snai/fullint8-st4-norm: Kriterien, festgelegt 2026-11-15 vor den gezaehlten Laeufen (PLAN.md Abschnitt 8, ZIEL.md).
+Frage: Rechnen RMSNorm vorwaerts, RMSNorm rueckwaerts (dx) und der Gradient der Norm-Gains (SNAI_I8_GANZ=4) ohne
+Gleitkomma, mindestens so genau wie die alte float32-Fassung (gemessen gegen float64 bei gleichem Eingang) und ohne
+Qualitaetsverlust gegen Stufe 3?
+Aufbau: proj_gz/st4 = Hauptbaum 1a8edde + patch_s0.py + patch_gz.py (3 Ersetzungen) + cortex_gz.nim f170ab44,
+Lib 60164549 (cortex.nim baf84b26 = Hauptbaum c750d11). Stufe 4 ersetzt nur gzNormFwd/gzNormBw; die Gain-Gradienten
+liegen jetzt ganzzahlig in gz.gGain (1 x d je Gain), Adam der Gains liest sie dort (Stufe 3 bleibt bytegleich).
+Entwurf: 1/rms als iM * 2^iE (iM in [2^30, 2^32]): Quadratsumme mit Zeilenschub (Summe <= 2^62), (ss << k) div d,
++ eps (1e-5f exakt als Mantisse) in einem 64-Bit-Akkumulator mit Exponent, ganzzahlige Wurzel, iM = 2^62 div r.
+Vorwaerts n = ((x*iM) >> 32) * w. Rueckwaerts nx = (x*iM) >> 30, dw = dy*w, mean = sum(dw*nx)/d mit Bitkappung je
+Faktor auf (62 - bits(d))/2, dx = (dw - nx*mean)*inv auf gemeinsamem Exponenten; gGain += dy*nx (Zeilenformat mit
+Exponent, gzAddRow).
+Bekannt und nicht gezaehlt: Pruefwerkzeuge (NORMVGL, VERGL) rechnen ihre Referenzen in float64/float32; sie laufen nur
+in Proben, nie in den K4-Laeufen.
+Aktive Nebenmechanismen: Revival aus (probe_iso.sh prueft revival_config.json; lauf_gz.sh wie Stufe 3); Clip ist Teil
+des Adam (Stufe 3, unveraendert); kein NET2NET-GUARD in den Stufe-3-Logs (0 Treffer), in K5 wieder gezaehlt.
+
+K1 Kontrolle: Lib 60164549, Kurzlauf (kurz_seg0.txt, isoliert per probe_iso.sh, 2 Faeden): Stufe 0/1/2/3 =
+   0f79d04c / 47176fa4 / 12e40925 / 6f382e75 (Bezugswerte; Stufe 3 gleich => die st3-Laeufe der Reihe
+   snai/fullint8-st3-adam gelten als Vergleichsarm). Stufe 4 zweimal gleich und mit 1 Faden gleich wie mit 2.
+K2 Bausteinprobe (SNAI_GZ_KERN=1, Stufe 4, erster Schritt): jeder Aufruf normfwd, normbw-dx, normbw-gain (je 5) und
+   alle Zeilen der Stufen 2-3 (matfwd, matbw-*, adam ...) unter FE_UPWARD und FE_TONEAREST bytegleich ("gleich").
+   Rot (SNAI_GZ_KERN_ROT=1, eine float32-Multiplikation in tb[0] je Zeile): mindestens eine normfwd- und eine
+   normbw-dx-Zeile "ABWEICHEND".
+K3 Genauigkeit bei gleichem Eingang (SNAI_GZ_NORMVGL=t; Lesart B, Entscheidung des Autors 2026-11-15): in jedem der
+   5 Norm-Aufrufe relL2 der Ganzzahl-Fassung gegen float64 <= 1e-6 fuer fwd, bw-dx und bw-gain; bei t = 1 und t = 150
+   (Kurzlauf) und t = 3000 (Segment 0, Saat s1). Die alte float32-Fassung wird daneben berichtet (Beobachtung, nicht
+   entscheidend). Rot (SNAI_GZ_NORMVGL_ROT=1, float64-Referenz um genau 1e-5 relativ verschoben), t = 1: jede
+   Ganzzahl-Zeile (fwd, bw-dx, bw-gain) > 1e-6 gegen die verschobene Referenz (d. h. das Kriterium schlaegt an; ein
+   korrekter Pfad zeigt dort ~1e-5 bis 3e-5).
+K3b Gradienten gegen den alten float32-Pfad trainStepI8Batched (SNAI_GZ_VERGL=1, Stufe 4, erster Schritt; Plausibilitaet, der alte Pfad ist kein
+   Wahrheitsbezug): je Tensor relL2 <= 0,05 und Kosinus >= 0,995, ausdruecklich auch g_rms_final, g_rms_att[l],
+   g_rms_ffn[l]. Rot (SNAI_GZ_VERGL_ROT=1): g_w_o[0] verfehlt relL2 <= 0,05.
+K4 Qualitaet: Segment 0 (5.001 Schritte), Saaten s1-s3 gepaart (gleicher Armname), Held-out 300 Fenster;
+   d = (st4 - st3)/st3 <= +2 % in 3 von 3, sonst Haltepunkt (ZIEL.md). Gleichstand (|d| < 10 %) ist das erwartete
+   Ergebnis; ein Gewinn wird nicht als Befund gelesen. Messgeraet-Rot (Fenster gemischt) wie bisher mitberichtet.
+K5 Messgeraet: in jedem K4-Lauf vor dem Urteil ansehen: "[GZ] adam_t=... Saettigungen" (jede > 0 macht den Lauf
+   verdaechtig), NET2NET-GUARD-Zeilen (jede macht den Lauf verdaechtig), STEPS_DONE=5001.
+Laufzeit wird berichtet (Stufe 3: 887-894 s je Segment), ist kein Kriterium.
+Pruefer (Zweitmeinung 15.11., Gemini/Mistral; Gemini ohne Befund): uebernommen: K3b-Bezug und K3-Rot praeziser
+benannt. Verworfen nach Quelltext: 'K2 invertiert, Rundungsmodi muessen abweichen' (der Ganzzahl-Pfad soll gerade
+modusunabhaengig sein, das ist die Frage); 'Division durch null bei r -> 0' (eps wird immer addiert, gzAkkAdd normiert
+auf 61 Bit, also m in [2^60, 2^62), r in [2^30, 2^31), iM in (2^31, 2^32]); 'eps keine exakte Mantisse' (1e-5f ist ein
+float32-Wert, gzMulF zerlegt ihn exakt, die float64-Referenz nimmt denselben Wert). Eigene Nachrechnung dabei:
+|m| < 2^30 (GZ_MB) => x*iM < 2^62, nx < 2^32, dy*nx < 2^62, mean-Summe <= d * 2^(62-bits(d)) <= 2^62: kein Ueberlauf.
+Urteil: erfuellt = K1-K5. Saaten 3, Regel 3 von 3; bei Uneinigkeit: saatabhaengig, kein Schluss.
+Reichweite: Knirps 96x2, ein Datensatz (Nano-Geschichten), CPU, 2 Faeden.

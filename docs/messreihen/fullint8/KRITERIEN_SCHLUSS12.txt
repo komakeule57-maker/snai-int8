@@ -1,0 +1,67 @@
+snai/fullint8-schluss12: Kriterien, festgelegt 2026-11-16 ~05:20 vor dem ersten Lauf.
+Frage: Gelten die tragenden Teile R (Rundungsprobe) und Q (Qualitaet) der Schlussprobe (snai/fullint8-schluss, e689,
+gemessen mit SNAI_I8_GANZ=10 in den Arbeitskopien sch_*) auch fuer den fertigen Schalter SNAI_I8_GANZ=12 (Stufen 1-12,
+mit ganzzahligem Merge und ohne float-Gradientenpuffer), gefahren aus dem Stand des Hauptbaums?
+Warum: R und Q stehen bisher nur fuer GANZ=10. Fuer GANZ=12 ist Segment 0 nur in naechster und auf gemessen (st12 K2,
+6a544467), und ueber 25.000 Schritte gar nicht. Die Stufen 11 und 12 aendern laut ihren Reihen (e691, e692) bei einem
+Worker kein Byte; das wird hier ueber den ganzen Lauf geprueft statt angenommen.
+
+Aufbau: hb_rund und hb_alle = Kopien von proj_hb (= Hauptbaum ~/Projekte/snai_edge_int8_lora nach Stufe 12, uncommittet:
+Lib dca24a87, cortex_gz.nim ae179d20, cortex.nim 4e192007, tensor_io.php 6d044735, train_cluster.php 50fc8b30,
+train_worker.php 4732351c). Vor dem Start: jede Code-Datei (php, nim, so, json ausser factory/) bytegleich zum
+Hauptbaum, sonst kein Start. hb_alle bekommt dazu aus sch_alle factory/input/geschichten_seg0..4.txt und die Genesis
+s1-s3 (md5 34242aac / b7ba6266 / 3c4c6939, sonst kein Start). Skripte unveraendert: reihe_gz.sh, lauf_gz.sh,
+probe_iso_basis.sh (die der Schlussprobe). Rezept wie dort: Knirps 96x2 gebunden, REST=sr, INT8_FULL, Warmup 500,
+Cosinus 0,001 -> 0,0001 bis 25.000, WD 0,1, 1 Worker, CPU, 2 Faeden je Lauf, nice 15. Einziges Stellrad gegenueber der
+Schlussprobe: SNAI_I8_GANZ=12 statt 10 und der Code-Stand (Stufen 11, 12 dazu).
+
+R12 (tragend): hb_rund, GANZ=12, s1, PROBE_IN=seg0 (Segment 0 ganz, 5.001 Schritte), 2 Faeden, Namen HR_* (vorher
+ergebnis/HR_*.snai loeschen, Fallstrick st12). Modi naechster / null / auf / ab (SNAI_FP_RUNDUNG ueber probe_iso_basis,
+dazu SNAI_GZ_IO_RUNDUNG = Modus fuer null/auf/ab). Bestanden: die vier V8-Checkpoints bytegleich. Erwartet 6a544467
+(= GANZ=10 und st12 K2); eine andere, aber in allen vier Modi gleiche md5 besteht R12 ebenfalls und wird als Befund
+berichtet (dann gilt Q12 nicht als Uebertrag, sondern nur nach eigener Messung).
+Rot: SNAI_GZ_ROT_FLOAT=h (float-Rechnung im Hauptfaden) in naechster und in auf: auf muss von naechster abweichen.
+Kontrolle: Rot-naechster != gruen-naechster (die Rechnung wirkt). Weichen sie nicht ab, ist die Probe blind: R12 nicht
+erfuellt, Abhilfe suchen, R12 wiederholen. Die Rot-Varianten o und a sind in der Schlussprobe gesehen (m11563, m11564)
+und laufen hier nicht mit; das Messgeraet (Rot-Schalter, Probe) ist dasselbe.
+
+R12w (tragend, nach Zweitmeinung): wie R12 mit PROBE_WORKER=2 (Stufe 11 wirkt, zusammen mit Stufe 12), Namen HRW_*,
+vier Modi, bestanden wenn bytegleich; erwartet 3f64d3c1 (= R2 der Stufe 11 mit GANZ=11). Rot fuer den Merge ist in
+R2 gesehen (2142369a / 2a984e41) und laeuft hier nicht mit.
+R12f (tragend, nach Zweitmeinung): Fortsetzungsweg (Lader ohne float-Gradientenpuffer, V8-Eingabe) im Kurzlauf,
+PROBE_BASIS=ergebnis/K1_g11.snai, 1 Faden, vier Modi, Namen HRF_*, bestanden wenn bytegleich; erwartet 389a20ff (= st12 K2).
+Q12 (tragend): hb_alle, GANZ=12, s1-s3, 5 Segmente (25.005 Schritte), ./reihe_gz.sh 5 hb_alle:12.
+Bestanden: Held-out (mess_text.php, 300 Fenster) nach Segment 4 je Saat (GANZ12 - PyTorch)/PyTorch <= +5 % gegen
+m625-m627 (2,2357 / 2,2385 / 2,2326), 3 von 3. Sonst Haltepunkt (Schwelle nicht lockern, Wege vorlegen).
+Dazu (Bytegleichheit, gleich gewichtet): alle 15 Segment-Checkpoints gegen sch_alle
+  s1: 6e710462 19d46fbb f94d53c1 3b7afe5f 00552e4d
+  s2: c290894a 81f8c14a 6a5253a0 197ded48 1b0574bb
+  s3: 100f0bc1 779eb281 4ee24230 e9ca5845 ea4ebe90
+Erwartet alle bytegleich (dann ist der Held-out identisch zu m11567-m11569, gemessen wird trotzdem). Weicht auch nur
+einer ab, ist die Aussage "Stufen 11/12 aendern bei einem Worker kein Byte" (e691/e692) ueber den ganzen Lauf
+widerlegt: dann Haltepunkt, unabhaengig vom Q-Wert (Entscheidung nicht vom Plan gedeckt), mit dem ersten
+abweichenden Segment im Bericht.
+
+K Messgeraet vor dem Urteil, je Segment- bzw. R-Lauf: rc 0, STEPS_DONE 5001, NET2NET-GUARD 0, Fatal/NaN/VETO 0, Magic
+SNAI_V8, Engine-Zeile "Stufen an: ... 11:MERGE 12:GFREI", Stufe-12-Meldung mit 2043648 Bytes ("freigegeben" in
+Segment 0 und in R, "nicht angelegt" in Segment 1-4), keine Stufe-12-WARNUNG, LR-Wache wie in der Schlussprobe,
+Telemetrie 5 Berichte je Segment, mess.jsonl 6 Zeilen je Saat, Rot der Messung (gemischte Fenster) um 9.
+Ein unerwarteter Befund macht den Messpunkt verdaechtig und wird vor dem Urteil geklaert.
+
+Nicht wiederholt (berichtet als fortgeltend): G (Gesamtvergleich gegen GANZ=0) und E (Einzelvergleiche REST, ADAM),
+weil die Stufen 1-10 im Code unveraendert sind und GANZ=0 im Hauptbaum bytegleich bleibt (Aus-Proben HB11/HB12);
+Stufen 11 und 12 haben ihren Einzelvergleich in e691 (K4, d <= +2 %) und e692 (bytegleich).
+Urteil: erfuellt = R12, R12w, R12f und Q12 bestanden, K ohne Befund. Deterministisch; R eine Saat (s1) wie in der Schlussprobe,
+Q drei Saaten gepaart (gleiche Genesis und Fensterfolge wie PyTorch und sch_alle).
+Danach: L der Schlussprobe neu urteilen (Nachtrag ERGEBNIS_SCHLUSS.md, Ergebnis, das e689 abloest).
+Reichweite: Knirps 96x2 gebunden, 1 Worker, CPU, rechner-a, ein Korpus. Mehrere Worker ueber 25.000 Schritte nicht
+Teil der Aussage (R2 der Stufe 11: Segment 0 mit 2 Workern bytegleich in allen vier Modi).
+Rechner: rechner-a, 12 Faeden (Q 3 x 2; daneben R in zwei Wellen zu 3 x 2, dann R12w einzeln zu 2 x 2 und R12f mit
+1 Faden), nice 15, Dauer ca. 1,5-2 h.
+Vermerk Aufbau: revival_config.json ist in hb_* wie in allen Probekopien (= sch_alle, bytegleich) auf "enabled": false
+gestellt, im Hauptbaum nicht; lauf_gz.sh und probe_iso_basis.sh brechen sonst ab. Alle uebrigen Code-Dateien bytegleich.
+Pruefer (Zweitmeinung 16.11. ~05:25, Aufbau): Mistral "6a544467 stammt aus Segment 5" (falsch gelesen: R ist Segment 0
+von s1); "bytegleich heisst nicht numerisch gleich" (verworfen: bytegleicher Checkpoint = gleiche Gewichte, Momente,
+Skalen); "Stufe 11 mit Stufe 12 bei mehreren Workern nicht geprueft" (berechtigt -> R12w); "Rundung nur in Segment 0,
+Fortsetzungsweg nicht" (berechtigt -> R12f; ueber alle Segmente nur im Modus naechster durch Q12). Gemini "Bytegleichheit
+zu N=10 unbegruendet erwartet" (die Erwartung ist der Pruefgegenstand: e691/e692 behaupten sie, Q12 prueft sie).

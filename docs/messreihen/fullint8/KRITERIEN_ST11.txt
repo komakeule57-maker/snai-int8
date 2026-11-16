@@ -1,0 +1,90 @@
+snai/fullint8-st11-merge: Kriterien, festgelegt 2026-11-16 vor den gezaehlten Laeufen (Entscheidung des Autors 16.11.,
+interne Notiz: "Ganzzahliger Merge" als Stufe 11, bevor "full int8" in die README kommt; ZIEL.md Punkt 1 und 3).
+Frage: Mittelt die Hauptinstanz mit SNAI_I8_GZ_MERGE=1 (bzw. SNAI_I8_GANZ=11) die SNAI_V8-Checkpoints mehrerer Worker
+ausschliesslich ganzzahlig (unabhaengig vom Rundungsmodus), so genau wie ein float64-Bezug, ohne dass das Training mit
+mehreren Workern schlechter wird als mit dem alten float-Merge, und bleibt mit Schalter aus alles bytegleich?
+
+Aufbau: st11 = st10 (Hauptbaum 1a8edde + patch_s0.py + patch_gz.py ed29d20f + patch_v8.py, cortex.nim b9263995; PHP =
+patch_lr.py + patch_v8php.py d780540f) + cortex_gz.nim 06f2e773 (= fa4a951b der Schlussprobe + Stufe 11) + patch_merge.py
+(tensor_io.php merge_v8_models, train_cluster.php: V8 mit mehreren Workern -> merge_v8_models, wenn die Lib Stufe 11 meldet,
+sonst wie bisher Abbruch). Lib 584489fd (bau12). Werkzeuge: merge_probe.php (ruft merge_v8_models des Projekts ohne
+Training; MERGE_PROBE_ALT=1 = alter merge_v6_models), vgl_v8.py (zwei V8-Dateien Block fuer Block: Anteil gleicher Codes,
+groesste Abweichung, Zeilenskalen in ulp), v8_rundweg.php, probe_iso_basis.sh 2fc813aa (PROBE_WORKER), neu lauf_gz_w.sh /
+reihe_gz_w.sh (= lauf_gz.sh / reihe_gz.sh mit LAUF_WORKER und LAUF_FAEDEN; die alten Skripte bleiben unveraendert).
+Entwurf: Gewichte: Summe q_i * Skala_i exakt auf gemeinsamem Raster (Exponent >= max - 31 + bits(N), Summe < 2^62), / N
+gerundet, neu quantisiert wie gzAdamZeile (Skala max/127 als 24-Bit-Mantisse, gzDivR, ohne SR), Nullzeile Skala 1,0 wie
+requantRow. 8-Bit-Momente: entpackt ueber gzTMm/gzTVm wie gzAdamZeile, gemittelt, gzMomKodiere ohne SR (v-Klemme wie im
+Training). float32-Tensoren: exakte Summe der Mantissen, / N, Halbe zur geraden Mantisse (bei N = 2 und gleichem Exponenten
+ist jede zweite Summe ein Halbfall; Halbe-weg-von-null zoege Betraege systematisch nach oben). adam_t = Maximum, Kopf und
+Flags wie die Eingaben. Abhaengigkeit: Stufe 11 braucht Stufe 10 (sonst Warnung, aus); der Schalter fragt die Lib selbst
+(cortex_gz_merge_an), damit Hauptinstanz und Worker dieselbe Schalterlogik haben.
+Pruefwerkzeuge: SNAI_GZ_IO_RUNDUNG (Modus fuer die Dauer jeder Merge-Funktion), SNAI_GZ_MERGE_ROT = i (Gewichte: Mittel ueber
+float32 * (1+2^-23)), m (Momente ebenso), f (float32-Zweig: Ergebnis * (1+2^-23)), SNAI_GZ_MERGEVGL=1 (float64-Bezug je
+Element: Gewichte acc = Summe q*s/N in float64, Skala float32(max/127), Code round(acc/Skala); Momente: Tabellenwert exp in
+float64 * Skala, Mittel, Neukodierung in float64 mit derselben Formel; float32: float32(Summe float64 / N); Bericht je
+Merge, aendert das Ergebnis nicht).
+Rauchtest vor diesen Kriterien (nicht gezaehlt): merge(A,A) = A (6e710462); merge(A,B) = merge(B,A) (6011a5b7); Modi auf/ab/null
+= naechster; Rot i/m/f weichen ab; Bezug 100 % Codes gleich, Skalen <= 1 ulp; N = 3 laeuft; Kurzlauf 2 Worker: GANZ=11 rc 0
+V8 36fba098, GANZ=10 Abbruch mit Meldung, GANZ=9 st11 = st10 = 5751c048 (V7); geladen und neu gespeichert bytegleich;
+gegen alten float-Merge (beide Wege geladen und als V8 geschrieben): Gewichte 99,9995 % gleich, Momente und float32 100 %.
+Aktive Nebenmechanismen: Revival aus (lauf prueft), Rescale aus (S0), Clipping an (Stufe 3), v-Klemme Vorgabe (auch im
+Merge), NET2NET-Waechter Vorgabe (gezaehlt). Bekannt und unschaedlich fuers Training: train_cluster.php verschluckt einen
+gelesenen Chunk "0" im Protokoll (interne Notiz), Zahlen nach Zeilenbruch mit Folgezeile lesen.
+
+K1 Kontrolle Schalter aus (Kurzlauf kurz_seg0, isoliert, probe_iso_basis):
+   (a) 1 Worker, st11: GANZ=0..9 = 0f79d04c / 47176fa4 / 12e40925 / 6f382e75 / ac0be686 / 8239bb67 / 39c71b8a / 0b208b49 /
+       278e3d14 / 201f5494, GANZ=10 = 759ba426 (Werte aus snai/fullint8-st10 K1 und dem Rauchtest der Schlussprobe);
+       GANZ=11 = 759ba426 (ein Worker: Kopie, Stufe 11 ohne Wirkung).
+   (b) 2 Worker: st11 = st10 bytegleich fuer GANZ=0 und GANZ=9 (alter Weg V7 unberuehrt); GANZ=11 + CKPT=0 = GANZ=9
+       (Stufe 11 ohne Stufe 10 aus); GANZ=10 bricht mit Meldung ab (rc != 0); GANZ=10 + MERGE=1 = GANZ=11.
+   (c) 2 Worker GANZ=11: zweimal gleich; 1 Faden = 2 Faeden; mit SNAI_GZ_MERGEVGL=1 = ohne.
+   (d) Vertraeglichkeit laut statt still: neue PHP + Stufe-10-Lib 969a56ee, GANZ=10 + MERGE=1, 2 Worker -> Abbruch mit
+       Meldung, rc != 0.
+K2 Merge selbst (merge_probe.php auf V8-Endstaenden der Schlussprobe sch_alle, Segmente sK der Saaten sS):
+   (a) merge(A,A) = A bytegleich fuer s1_s0, s2_s4, s3_s2. (b) merge(A,B) = merge(B,A); bei drei Eingaben alle sechs
+   Reihenfolgen gleich. (c) float64-Bezug (SNAI_GZ_MERGEVGL) auf (s1_s0,s2_s0), (s1_s3,s1_s4), (s2_s4,s3_s4),
+   (s1_s0,s2_s0,s3_s0) und auf jedem Merge der K4-Laeufe von Arm A (echte Worker-Paare): Codes der Gewichte, m und v
+   >= 99,99 % gleich und hoechstens 1 Code Abweichung; Zeilenskalen hoechstens 1 ulp; float32 >= 99,99 % bitgleich und
+   hoechstens 1 ulp. (d) Ergebnis ladbar: v8_rundweg (GANZ=10) schreibt es bytegleich zurueck; mess_text.php rc 0 mit
+   endlichem Loss. (e) Laut statt still: gemischte Eingaben V8 + V7 und eine abgeschnittene V8-Datei -> merge_v8_models
+   false mit Meldung, keine Ausgabedatei. Rot dieser Probe: dieselben Aufrufe mit zwei gueltigen V8 gelingen.
+   (f) Berichtet, kein Kriterium: Abstand zum alten float-Merge (beide Wege aus denselben Eingaben, alter Weg ueber V7,
+   danach beide geladen und als V8 geschrieben, vgl_v8.py) fuer die Paare aus (c).
+K3 Rundungsmodus im Merge (merge_probe.php, (s1_s0,s2_s0) und (s1_s0,s2_s0,s3_s0)): SNAI_GZ_IO_RUNDUNG = auf, ab, null
+   bytegleich zu naechster. Rot je Variante i, m, f: mit Rot-Schalter auf gegen naechster verschieden; Kontrolle: Rot in
+   naechster weicht vom gruenen naechster ab. Bleibt eine Variante in auf gleich naechster, auch null und ab fahren; bleibt sie
+   in allen gleich, ist die Probe fuer diesen Zweig blind (dann Abhilfe vor dem Urteil).
+R2 Rundungsprobe mit 2 Workern (ZIEL Punkt 1 mit Merge, tragend): st11, GANZ=11, Saat s1, PROBE_IN=seg0 (ganzes Segment 0,
+   je Worker die Haelfte), 2 Faeden je Worker, Modi naechster, null, auf, ab (SNAI_FP_RUNDUNG und SNAI_GZ_IO_RUNDUNG
+   gleich; naechster ohne IO-Variable). Bestanden: alle vier gemittelten Checkpoints (SNAI_V8) bytegleich, rc 0, Bilanz Plan =
+   Ausfuehrung, Merge-Zeile "SNAI_V8 ganzzahlig gemittelt" im Protokoll (sonst waere die Gleichheit ohne Merge zustande gekommen). Rot: SNAI_GZ_MERGE_ROT=i in naechster und auf -> verschieden; Kontrolle Rot naechster != gruen naechster.
+K4 Qualitaet mit 2 Workern (Haltepunkt-Regel des Ziels: kein Einzelschritt > 2 %): Arm A = st11-Kopie m11a mit GANZ=11
+   (V8, ganzzahliger Merge, SNAI_GZ_MERGEVGL=1 fuer K2c), Arm B = Kopie m11b mit GANZ=11 + SNAI_I8_GZ_CKPT=0 (V7 an der
+   Grenze, damit Stufe 11 laut Abhaengigkeit aus = alter float-Merge). Ein Stellrad (CKPT, an dem der Merge-Weg haengt);
+   dass V8 und V7 desselben Zustands gleich weitertrainieren, belegt snai/fullint8-st10 K2c, an der Grenze wirkt also nur
+   die Merge-Rechnung. Rezept wie Q der Schlussprobe (REST=sr, INT8_FULL, gebunden, Warmup 500, Cosinus 0,001 -> 0,0001 bis
+   25.000, WD 0,1), aber 2 Worker je Lauf (Eingabe je Segment in zwei Haelften), 1 Faden je Worker, nice 15, s1-s3 gepaart
+   (gleicher Armname), 2 Segmente (zwei Merges, Held-out mess_text.php 300 Fenster nach Segment 1).
+   d = (A - B)/B je Saat: <= +2 % in 3 von 3, sonst Haltepunkt; |d| < 10 % Gleichstand. Kontrolle (vor dem Urteil):
+   Segment 0 bis zum ersten Merge in beiden Armen gleich (Verlustzeilen der Worker im Trainingsprotokoll identisch).
+K5 Messgeraet: rc 0 je Segment, Bilanz Plan = Ausfuehrung, NET2NET-GUARD-Zahl, Saettigungen Adam und Restpfad, LR-Wache ohne
+   Abbruch, Merge-Zeile im Protokoll (A "SNAI_V8 ganzzahlig gemittelt", B "INT8-Tensoren ... verschmolzen" plus Warnung
+   Stufe 11 aus), Magic der Segmentdateien (A V8, B V7), mess.jsonl ohne Fehlerzeile, Rot der Messung (sabotage 1) > 8.
+Laufzeit des Merge und der Segmente berichtet, kein Kriterium.
+Grenzen: Die Rundungsprobe sieht float-Rechnung, deren Ergebnis vom Modus abhaengt (exakte float-Operationen nicht, siehe
+KRITERIEN_SCHLUSS.txt). PHP liest und schreibt im Merge nur Bytes (pack/unpack von Zaehlern, kein Rechnen mit Werten).
+Gemessen nur N = 2 (Training) und N = 3 (merge_probe); N <= 64 laut Code.
+Urteil: erfuellt = K1-K5 und R2. Saaten 3 in K4 (R2: 1 Saat, deterministisch, 4 Modi); Regel 3 von 3; bei Uneinigkeit:
+saatabhaengig, kein Schluss.
+Pruefer (Zweitmeinung 16.11., Aufbau), Einwaende gegen den Quelltext geprueft: Gemini 'Halbe weg von null widerspricht K3'
+(die Regel ist Ganzzahlrechnung, gzDivR/gzShr, nicht der FPU-Modus); 'Tabellen in float64 folgen dem FPU-Modus' (gzTabellen
+setzt fuer den Bau selbst "naechster" und stellt danach zurueck, Ausnahme a; K3 und R2 laufen mit anderem Modus und saehen
+es); 'Merge aus darf nicht abbrechen' (fuer V8 gibt es keinen anderen Merge, der Abbruch ist das bisherige Verhalten aus
+Stufe 10 K3b; V7 bleibt per CKPT=0 waehlbar); Gemini/Mistral '2 Codes Abweichung zum alten Merge widersprechen der
+Bytegleichheit' (K1 verlangt Bytegleichheit nur fuer den unveraenderten V7-Weg, und der ist bytegleich; der alte Merge ist nicht
+der Bezug, er rundet jedes Produkt q*s vor dem Summieren auf float32; gegen den float64-Bezug waren im Rauchtest 100 % der Codes
+gleich, die beiden Abweichungen liegen also beim alten Weg). Mistral 'Entpacken bis 2^60 unbegruendet' (24-Bit-Tabelle mal
+24-Bit-Skala = 48 Bit, auf das Zeilenraster wie in gzAdamZeile; Reserve bis 2^62 fuer die Summe); 'verschiedene Halbregeln'
+(gewollt: Gewichte und Momente wie im Training und im alten Merge, float32 Halbe zur Geraden wie der float64-Bezug; die
+Wirkung misst K2c); 'Arm B float64 oder float32' (V7 speichert Momente float32, der alte Merge summiert sie in float64).
+Reichweite: Knirps 96x2 gebunden (V8 mit Flag-Bit 0; ungebunden mit w_out nur ueber den Code), CPU, rechner-a, ein Korpus.

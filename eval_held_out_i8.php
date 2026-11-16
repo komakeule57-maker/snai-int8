@@ -46,8 +46,8 @@ $header = load_model_header_any($checkpoint);
 if (!$header) {
     heldout_i8_fail("Konnte Modell-Header nicht lesen: $checkpoint");
 }
-if (!snai_is_int8_magic($header['magic'])) {
-    heldout_i8_fail("Kein SNAI_V6/V7-Checkpoint (Magic: {$header['magic']}) - fuer FP32 eval_held_out.php verwenden.");
+if (!snai_is_int8_ladbar($header['magic'])) {
+    heldout_i8_fail("Kein SNAI_V6/V7/V8-Checkpoint (Magic: {$header['magic']}) - fuer FP32 eval_held_out.php verwenden.");
 }
 
 $holdout_files = glob(rtrim($holdout_dir, '/') . '/*.txt');

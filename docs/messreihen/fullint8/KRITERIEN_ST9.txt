@@ -1,0 +1,50 @@
+snai/fullint8-st9-lrplan: Kriterien, festgelegt 2026-11-15 vor den gezaehlten Laeufen (PLAN.md, ZIEL.md Ausnahme b).
+Frage: Fuehrt die Engine mit SNAI_I8_GZ_LRPLAN=1 den Lernratenplan (Warmup linear, Cosinus-Abklingen mit Boden, Formel
+wie train_worker.php) in Festkomma - Tabelle einmal beim ersten Gebrauch, je Schritt nur int64 -, so genau wie der
+float32-Wert aus PHP (gegen float64), unabhaengig vom Rundungsmodus und ohne Qualitaetsverlust gegen Stufe 8?
+Nummerierung: Stufe 9 = Lernratenplan, Stufe 10 = Checkpoint V8 (im PLAN.md S9); die Gesamtprobe des Plans (S10) heisst
+Schlussprobe. Grund: die Kurzform SNAI_I8_GANZ=N bleibt lueckenlos in Bau-Reihenfolge.
+Aufbau: proj_gz/st9 = Hauptbaum 1a8edde + patch_s0.py + patch_gz.py ed29d20f + patch_lr.py (PHP: tensor_ffi_adapter.php,
+train_worker.php) + cortex_gz.nim 8e99b309, Lib 3e0e8e5f (bau9, cortex.nim 624d543d). Proben per probe_iso_wd.sh
+(= probe_iso.sh + PROBE_W/PROBE_D, Vorgabe 500/25000).
+Rauchtest vor diesen Kriterien (nicht gezaehlt, mit Vorfassungen der Lib): GANZ=8 = 278e3d14 (aus bytegleich, neue Lib +
+gepatchtes PHP); GANZ=9 laeuft (201f5494); Vergleich int 6,5e-8 / f32 5,9e-8; Bausteinprobe lr-plan gleich; Wache bricht
+mit SNAI_GZ_LRWACHE_ROT=1 im ersten Schritt ab.
+Entwurf (cortex_gz.nim, Abschnitt "Stufe 9"): PHP uebergibt lr0, W, S, D, m einmal je Prozess (cortex_gz_lr_plan);
+ausgeschaltet werden sie nur gespeichert. (1 + cos(pi i/(D-S)))/2 als Q30-Tabelle i = 0..D-S, float64 im Modus
+"naechster" (Ausnahme a/b). Je Schritt: t < W: lr0.m * t / W (gzDivR); sonst bei D > W: f = m + (1-m) * Tab[clamp(t-S)]
+in Q30, lr = lr0.m * f; sonst lr0; Ergebnis 24-Bit-Mantisse + Exponent, geht unveraendert in den ganzzahligen Adam
+(K und Weight Decay). Wache: der float-Wert aus PHP (Protokoll) wird je Schritt ganzzahlig gegen den Plan verglichen;
+Abweichung > 2^-17 relativ = Abbruch.
+Abhaengigkeit: Stufe 9 braucht Stufe 3 (ADAM); ohne sie Warnung und ohne Wirkung (im Schalter vermerkt).
+Bekannt vor der Messung: Der Plan hat eine 24-Bit-Mantisse wie float32; erwartet wird gleiche Groessenordnung wie
+float32, nicht mehr. Die Kurzlaeufe (232 Schritte) liegen ganz im Warmup; den Cosinus pruefen K2/K3 ueber alle Schritte
+und K4 bis Schritt 5001.
+
+K1 Kontrolle (Kurzlauf, isoliert, 2 Faeden; Stufe-9-Lib + gepatchtes PHP): GANZ=0..8 = 0f79d04c / 47176fa4 / 12e40925 /
+   6f382e75 / ac0be686 / 8239bb67 / 39c71b8a / 0b208b49 / 278e3d14; GANZ=9 + LRPLAN=0 = 278e3d14; GANZ=8 + LRPLAN=1 =
+   GANZ=9; Stufe 9 zweimal gleich, 1 Faden = 2 Faeden; GANZ=2 + LRPLAN=1 (ohne ADAM) = 12e40925 und Warnung im Protokoll;
+   GANZ=3 + LRPLAN=1 laeuft, Loss +-2 % von GANZ=3. Vertraeglichkeit: Stufe-8-Lib (ohne Symbol) + gepatchtes PHP,
+   GANZ=8 = 278e3d14; Stufe-9-Lib + ungepatchtes PHP: GANZ=8 = 278e3d14, GANZ=9 bricht ab (rc != 0, "kein Plan gesetzt").
+K2 Bausteinprobe (SNAI_GZ_KERN=1, GANZ=9, erster Schritt): lr-plan ueber alle Schritte 1..D+100 (Tabelle je Lauf neu)
+   und alle Zeilen der Stufen 2-8 unter FE_UPWARD und FE_TONEAREST bytegleich. Rot 1 (KERN_ROT=1, float32-Rundung im
+   Schrittwert): lr-plan ABWEICHEND. Rot 2 (KERN_ROT=2, Tabelle ohne festen Modus in float32): lr-plan ABWEICHEND.
+K3 Genauigkeit (SNAI_GZ_LRVGL=1, gleiche Parameter: lr0 und m wie uebergeben): groesste relative Abweichung des Plans
+   gegen float64 ueber alle Schritte 1..D+100 <= 1e-6, fuer vier Planformen: (a) Rezept W=500, S=W, D=25000;
+   (b) spaeter Abklingbeginn SNAI_LR_DECAY_START=22500; (c) ohne Abklingen PROBE_D=0; (d) ohne Warmup PROBE_W=0.
+   float32 (die float64-Formel auf float32 gerundet, so kommt der PHP-Wert) nur berichtet.
+   Rot (SNAI_GZ_LRVGL_ROT=1, Referenz +1e-5), Planform (a): > 1e-6.
+K3b Wache: in keinem Lauf dieser Reihe ein Abbruch ausser der Rot-Probe; die groesste berichtete Abweichung gegen PHP
+   wird berichtet. Rot (SNAI_GZ_LRWACHE_ROT=1, Plan +2^-12): Abbruch mit FATAL im ersten Schritt.
+K4 Qualitaet: Segment 0, Saaten s1-s3 gepaart, Held-out 300 Fenster; d = (st9 - st8)/st8 <= +2 % in 3 von 3, sonst
+   Haltepunkt. |d| < 10 % ist Gleichstand und das erwartete Ergebnis.
+K5 Messgeraet: Saettigungen (Adam, Restpfad), NET2NET-GUARD, STEPS_DONE=5001, Wachenbericht alle 1000 Schritte vorhanden.
+Laufzeit berichtet, kein Kriterium.
+Pruefer (Zweitmeinung 15.11., Code und Aufbau; Gemini ohne Befund, ihm fehlten die Hilfsfunktionen): Mistrals Einwaende
+nachgerechnet, keiner haelt: 'Tabelle ist cos statt (1+cos)/2, bei t = D falsch' (die Tabelle haelt (1+cos)/2, bei
+t = D steht 0, f = m wie PHP); 'Warmup laeuft ueber' (num < 2^55, k = 61 - bits(num) => num * 2^k < 2^61); 'Rundung
+anders als PHP' (Bytegleichheit mit PHP ist nicht verlangt; Wache und K3 mit Toleranz); 'W = 0 falsch' (PHP geht bei
+W = 0 und D > 0 ebenfalls in den Abklingzweig); '24-Bit-Rundung verliert Genauigkeit' (so genau wie der float32-Wert
+aus PHP, vorab vermerkt).
+Urteil: erfuellt = K1-K5. Saaten 3, Regel 3 von 3; bei Uneinigkeit: saatabhaengig, kein Schluss.
+Reichweite: Knirps 96x2, ein Datensatz (Nano-Geschichten), CPU, 2 Faeden; Planformen wie in K3.

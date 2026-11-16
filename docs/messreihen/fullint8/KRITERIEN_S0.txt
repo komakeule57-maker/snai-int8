@@ -1,0 +1,21 @@
+snai/fullint8-s0-probe: Kriterien, festgelegt 2026-11-15 vor dem ersten Lauf (Plan PLAN.md Abschnitt 2).
+Frage: Taugt die Rundungsmodus-Probe (SNAI_FP_RUNDUNG, patch_s0.py) als Pruefgeraet dafuer, ob der int8-Trainingsschritt
+noch in float rechnet?
+Aufbau: proj_s0 = Hauptbaum 1a8edde + patch_s0.py (eine Stelle), Lib-Bau nach Hauptbaum-Rezept (proj_basis ergibt
+b445fbe4 = Hauptbaum-Lib, Baukontrolle bestanden vor dem Lauf). Knirps 96x2 Genesis gesch_gen_d96h6L2_s1, Eingabe die
+ersten 1000 Zeilen von geschichten_seg0.txt (kurz_seg0.txt), Rezept wie lauf_geschichten.sh (SNAI_INT8_FULL=1,
+SNAI_I8_REST=sr, gebunden, Warmup 500, LR 0,001, Revival aus, CPU, OMP_NUM_THREADS=2). Jeder Lauf gleicher
+Ausgabename (gleiche Saat), danach umbenannt. Gemessen: md5 des Checkpoints, FPPROBE-Zeile, Fehlerkanal.
+Laeufe: U1, U2 ungesetzt; N naechster; Z null; A auf; D ab (je proj_s0); B ungesetzt mit proj_basis-Lib.
+Dazu K1b: Lauf A mit OMP_NUM_THREADS=4 (nur die FPPROBE-Zeile zaehlt).
+K1 Reichweite: In jedem gesetzten Modus meldet JEDER OpenMP-Faden den gesetzten FE-Wert, und die Bits von 1/3 sind
+   unter auf und ab verschieden (Rundung wirkt in den Faeden). Gilt fuer 2 und 4 Faeden.
+K2 Neutral: md5(N) = md5(U1).
+K3 Wiederholung: md5(U1) = md5(U2).
+K4 Rot (heutiger Stand rechnet in float): md5(Z), md5(A), md5(D) je verschieden von md5(U1).
+K5 Patch unschaedlich: md5(U1) = md5(B).
+Fehlerkanal: jede unerwartete Meldung im Trainingslog macht den Lauf verdaechtig.
+Urteil: erfuellt = K1-K5 alle; sonst verfehlt (Geraet vor S1 reparieren). Ein Lauf je Zelle genuegt, weil das System
+deterministisch ist (K3 prueft das) und das Kriterium Bytegleichheit ist, kein Mittelwert.
+Grenze: Gruen der Probe (Bytegleichheit unter allen Modi) ist erst ab S1 an einem ganzzahligen Teil zu sehen; S0 zeigt
+nur Rot und Neutralitaet.

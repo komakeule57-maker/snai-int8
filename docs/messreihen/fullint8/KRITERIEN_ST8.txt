@@ -1,0 +1,46 @@
+snai/fullint8-st8-rest: Kriterien, festgelegt 2026-11-15 vor den gezaehlten Laeufen (PLAN.md Abschnitt 8, ZIEL.md).
+Frage: Rechnen Rest-Addition, Embedding vorwaerts und rueckwaerts (Lookup-Anteil des Gradienten) und SiLU vorwaerts
+(samt int8-Historie von u und s) und rueckwaerts mit SNAI_I8_GZ_REST=1 ohne Gleitkomma, mindestens so genau wie die
+alte float32-Fassung (gegen float64 bei gleichem Eingang) und ohne Qualitaetsverlust gegen Stufe 7?
+Aufbau: proj_gz/st8 = Hauptbaum 1a8edde + patch_s0.py + patch_gz.py ed29d20f + cortex_gz.nim 4aabb927, Lib 8652dd66
+(gebaut in bau8, cortex.nim 624d543d). Rauchtest vor diesen Kriterien (nicht gezaehlt): T8 laeuft, T8 mit REST=0 =
+Stufe 7 (0b208b49). Eigene Durchsicht vor dem Pruefer: Saettigungszweig der SiLU-Ableitung lief ueber (sg * 2^61) und
+saettigte die ganze Zeile; jetzt je Element, nur wenn x(1-sigma) in Q30 nicht in 61 Bit passt (T8 danach unveraendert
+278e3d14, Lib vorher d4579a5b). Danach die Rot-1-Sonde der CE (Stufe 7) von tb[0] auf tb[tg] gesetzt (Reihe
+snai/fullint8-st7-logits); Normalweg unveraendert.
+Entwurf (cortex_gz.nim, Abschnitt "Stufe 8"): Addition per gzAddRow; Embedding Code * Skala * embFak mit bitgenau
+zerlegter Skala und embFak (exakt); Lookup-Gradient dx * embFak in einen eigenen Ganzzahl-Puffer gLook (Adam holt ihn in
+gzEmbZusammen; ohne Stufe 3 Kleber nach g_embeddings); SiLU: u je Position int8 (round(m*127/max)), sigma je Code ueber
+2^(-|v| log2 e) und eine Division in Q30 (sigma(-|v|) = t/(1+t) fuer Genauigkeit bei kleinem sigma), s = c * (sM *
+sigma) >> 7, s je Position int8; rueckwaerts ds *= sigma (1 + x (1 - sigma)) in Q30; Saettigung (|x| um 2^31) setzt den Grenzwert 1 bzw. 0 und wird
+gezaehlt.
+Aktive Nebenmechanismen wie Stufe 7; neu ein Saettigungszaehler Restpfad (Bericht alle 1000 Schritte).
+
+K1 Kontrolle (Kurzlauf, isoliert, 2 Faeden): Stufe-8-Lib GANZ=0..7 = 0f79d04c / 47176fa4 / 12e40925 / 6f382e75 /
+   ac0be686 / 8239bb67 / 39c71b8a / 0b208b49; GANZ=8 + REST=0 = 0b208b49; GANZ=7 + REST=1 = GANZ=8; Stufe 8 zweimal
+   gleich, 1 Faden = 2 Faeden; grob: GANZ=1 + REST=1 und GANZ=8 + ADAM=0 laufen (Kleber nach g_embeddings),
+   Loss +-2 % von GANZ=8.
+K2 Bausteinprobe (SNAI_GZ_KERN=1, GANZ=8, erster Schritt): rest-add (4), emb-fwd, emb-bw, silu-fwd-u, silu-fwd-s,
+   silu-bw (je 2) und alle Zeilen der Stufen 2-7 unter FE_UPWARD und FE_TONEAREST bytegleich. Rot 1 (SNAI_GZ_KERN_ROT=1,
+   float32-Rundung in tb[0]): je mind. eine rest-add-, emb-fwd-, emb-bw-, silu-fwd-s- und silu-bw-Zeile ABWEICHEND.
+   Rot 2 (SNAI_GZ_KERN_ROT=2, Tabellen ohne festen Modus): mind. eine silu-Zeile ABWEICHEND, matfwd/matbw/norm/adam
+   gleich.
+K3 Genauigkeit bei gleichem Eingang (SNAI_GZ_RESTVGL=t, Lesart B), bei t = 1, 150 (Kurzlauf) und 3000 (Segment 0, s1):
+   - relL2 Ganzzahl gegen float64 <= 1e-6 fuer rest-add, emb-fwd, emb-bw, silu-bw;
+   - SiLU vorwaerts: u-Codes gleich den float64-Codes in >= 99,999 %, s-Codes in >= 99,99 % (bei s entscheidet die
+     Rundung einer exakt berechneten Groesse; ein einzelner Kippcode ist bei 1e-9 Fehler selten, aber moeglich);
+     relL2 von s wird berichtet;
+   float32 nur berichtet. Rot (SNAI_GZ_RESTVGL_ROT=1: Referenz +1e-5, Referenzcodes aus x*127/max*(1+1e-3)), t = 1:
+   jede relL2-Zeile > 1e-6 und beide Codezaehlungen unter ihrer Schwelle.
+K3b Gradienten gegen den alten float32-Pfad (SNAI_GZ_VERGL=1, GANZ=8, erster Schritt; Plausibilitaet): je Tensor
+   relL2 <= 0,05, cos >= 0,995, ausdruecklich auch g_embeddings. Rot (SNAI_GZ_VERGL_ROT=1): g_w_o[0] verfehlt.
+K4 Qualitaet: Segment 0, Saaten s1-s3 gepaart, Held-out 300 Fenster; d = (st8 - st7)/st7 <= +2 % in 3 von 3, sonst
+   Haltepunkt. |d| < 10 % ist Gleichstand und das erwartete Ergebnis.
+K5 Messgeraet: Saettigungen (Adam UND Restpfad), NET2NET-GUARD, STEPS_DONE=5001 in jedem K4-Lauf vor dem Urteil.
+Laufzeit berichtet, kein Kriterium.
+Pruefer (Zweitmeinung 15.11., Code und Aufbau; Gemini ohne Befund, ihm fehlten die Hilfsfunktionen): Mistrals Einwaende
+nachgerechnet, keiner haelt: 'Code -128 bei -127,5' (|m| <= max => |m*127/max| <= 127); 'sa in sh falsch' (y = P *
+2^(sa+e-30+32), sh = e+sa+2); 'vererbte Fehler' (K3 vergleicht gegen eine unabhaengige float64-Rechnung, nicht gegen
+die Vorstufe); 'seltene Bins' (ein Fehler nur im Randcode 127 traefe jede Zeile, 1/384 >> 1e-5).
+Urteil: erfuellt = K1-K5. Saaten 3, Regel 3 von 3; bei Uneinigkeit: saatabhaengig, kein Schluss.
+Reichweite: Knirps 96x2, ein Datensatz (Nano-Geschichten), CPU, 2 Faeden.

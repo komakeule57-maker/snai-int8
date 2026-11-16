@@ -7335,6 +7335,8 @@ proc trainStepI8Batched(state: ptr CortexState, t_in, t_tg, t_mask: ptr IntArray
   trainableOut = trainable_count
   return total_loss / max(1, trainable_count).cfloat
 
+include cortex_gz   # FULLINT8 (2026-11-15): ganzzahliger CPU-Pfad, Schalter SNAI_I8_GANZ + SNAI_I8_GZ_<STUFE>, Vorgabe aus
+
 proc cortexTrainStepI8Roh(state: ptr CortexState, raw_in: ptr cint, raw_tg: ptr cint, raw_mask: ptr cint, num_tok: cint, lr: cfloat): cfloat =
   if state.isNil or state.weightDtype != 1: return -1.0
   # SPEICHER-AUDIT 2026-08-19: bei einem reinen Inferenz-Artefakt (SNAI_V6
@@ -7403,12 +7405,22 @@ proc cortexTrainStepI8Roh(state: ptr CortexState, raw_in: ptr cint, raw_tg: ptr 
   # SPEICHERARM: sind die Basis-Gradientenpuffer freigegeben, gibt es hier
   # nichts zu nullen - und ein Zugriff waere ein Nullzeiger.
   let baseGradsGone = state.baseOptFreed != 0
-  if not baseGradsGone:
+  # FULLINT8 Stufe 12: ohne float-Gradientenpuffer der Matrizen (nicht angelegt oder freigegeben) geht nur der GZ-Pfad
+  # mit den Stufen 2, 3 und 8 ohne LoRA - alles andere laut ablehnen statt in einen Nullzeiger zu laufen.
+  let gWeg = not baseGradsGone and state.g_embeddings.data.isNil
+  # Rot-Probe der Sperre: SNAI_GZ_GFREI_ROT=1 tut so, als braeuchte der Schritt die Puffer (muss laut abbrechen).
+  if gWeg and (not gzGFrei() or loraOn(state) or getEnv("SNAI_GZ_GFREI_ROT") == "1"):
+    # Prozess beenden statt -1 zurueckgeben: train_worker.php wertet -1 nicht aus und trainierte im Genesis-Weg nach dem
+    # ersten Schritt still weiter (Rot-Probe snai/fullint8-st12-gfrei K4, 16.11.).
+    stderr.writeLine("[cortex] FATAL: die float-Gradientenpuffer fehlen (Stufe 12, SNAI_I8_GZ_GFREI), dieser Schritt ",
+                     "braucht sie aber (Stufe 2, 3 oder 8 aus, LoRA oder ein Pruefwerkzeug) - Prozess beendet.")
+    quit(1)
+  if not baseGradsGone and not gWeg:
     zeroMat(state.g_embeddings)
     zeroGradI8(state.w_out_q8, state.g_w_out)
   zeroArr(state.g_rms_final_weight, state.hiddenDim)
   for l in 0 ..< state.numLayers:
-    if not baseGradsGone:
+    if not baseGradsGone and not gWeg:
       zeroGradI8(state.w_q_q8[l], state.g_w_q[l])
       zeroGradI8(state.w_k_q8[l], state.g_w_k[l])
       zeroGradI8(state.w_v_q8[l], state.g_w_v[l])
@@ -7432,7 +7444,15 @@ proc cortexTrainStepI8Roh(state: ptr CortexState, raw_in: ptr cint, raw_tg: ptr 
   # zurueckholen, Clipping, Adam) - die ist fuer beide Pfade identisch.
   var batchedLoss: cfloat = 0.0
   var usedBatched = false
-  if batched_i8 != 0 and not state.i8_qbatch.isNil:
+  if gzAn(1):
+    # FULLINT8: Vorwaerts/Rueckwaerts im GZ-Pfad (cortex_gz.nim); Nachbereitung unten wie im gebuendelten Pfad.
+    if not gzVerglFertig and getEnv("SNAI_GZ_VERGL") == "1":
+      gzVerglFertig = true
+      batchedLoss = gzVergleich(state, t_in, t_tg, t_mask, act, lr, trainable_count)
+    else:
+      batchedLoss = gzFwdBwd(state, t_in, t_tg, t_mask, act, trainable_count)
+    usedBatched = true
+  elif batched_i8 != 0 and not state.i8_qbatch.isNil:
     zeitMiss(ZA_BATCH):
       batchedLoss = trainStepI8Batched(state, t_in, t_tg, t_mask, act, lr, trainable_count)
     usedBatched = true
@@ -7693,6 +7713,10 @@ proc cortexTrainStepI8Roh(state: ptr CortexState, raw_in: ptr cint, raw_tg: ptr 
       for d in 0 ..< state.hiddenDim:
         state.g_embeddings.data[tid * state.hiddenDim + d] += state.d_hidden[d] * embFak(state)
 
+  if gzAn(3):
+    # FULLINT8 Stufe 3: Clip, Adam und Gains ganzzahlig (cortex_gz.nim, gzOptSchritt).
+    gzOptSchritt(state, lr, trainable_count)
+    return batchedLoss
   # PHASE 7: Gegenstueck zum Nullen oben - die auf der GPU akkumulierten
   # Gradienten muessen zurueck auf den Host, BEVOR clipGlobalGradientNorm()
   # und der Adam-Schritt (beide CPU) sie lesen. Spiegelt exakt das
@@ -7767,10 +7791,58 @@ proc cortexTrainStepI8Roh(state: ptr CortexState, raw_in: ptr cint, raw_tg: ptr 
   if usedBatched: return batchedLoss
   return total_loss / max(1, trainable_count).cfloat
 
+# FULLINT8 S0 (2026-11-15): Rundungsmodus-Probe. SNAI_FP_RUNDUNG=naechster|null|auf|ab
+# stellt den FPU-Rundungsmodus (fesetround: SSE/MXCSR und x87) in jedem OpenMP-Faden NUR fuer die Dauer von
+# cortex_train_step_i8 um. Rechnet der Schritt nirgends in float, bleibt der Checkpoint in allen Modi bytegleich.
+# Ungesetzt: kein einziger Aufruf, Rechnung unveraendert. Meldung einmal auf stderr (stdout bleibt frei).
+proc cFesetround(m: cint): cint {.importc: "fesetround", header: "<fenv.h>".}
+proc cFegetround(): cint {.importc: "fegetround", header: "<fenv.h>".}
+var cFeNaechster {.importc: "FE_TONEAREST", header: "<fenv.h>".}: cint
+var cFeNull {.importc: "FE_TOWARDZERO", header: "<fenv.h>".}: cint
+var cFeAuf {.importc: "FE_UPWARD", header: "<fenv.h>".}: cint
+var cFeAb {.importc: "FE_DOWNWARD", header: "<fenv.h>".}: cint
+proc cOmpMaxThreads(): cint {.importc: "omp_get_max_threads", header: "<omp.h>".}
+proc cOmpThreadNum(): cint {.importc: "omp_get_thread_num", header: "<omp.h>".}
+var fpProbeModus = -2       # -2 ungelesen, -1 aus, sonst FE_*-Wert
+var fpProbeGemeldet = false
+var fpProbeDrei: cfloat = 3.0'f32   # global, damit 1/3 nicht beim Uebersetzen gerechnet wird
+var fpProbeRund: array[256, cint]
+var fpProbeBits: array[256, uint32]
+proc fpProbeLies() =
+  let w = getEnv("SNAI_FP_RUNDUNG")
+  if w == "": fpProbeModus = -1
+  elif w == "naechster": fpProbeModus = cFeNaechster.int
+  elif w == "null": fpProbeModus = cFeNull.int
+  elif w == "auf": fpProbeModus = cFeAuf.int
+  elif w == "ab": fpProbeModus = cFeAb.int
+  else:
+    stderr.writeLine("SNAI_FP_RUNDUNG='", w, "' ungueltig (naechster, null, auf, ab) - Abbruch")
+    quit(1)
+proc fpProbeSetze(m: cint) =
+  discard cFesetround(m)
+  let n = max(1, cOmpMaxThreads().int)
+  {.push checks: off.}
+  for t in 0 || (n - 1):
+    discard cFesetround(m)
+    let k = cOmpThreadNum().int
+    if k >= 0 and k < 256:
+      fpProbeRund[k] = cFegetround()
+      fpProbeBits[k] = cast[uint32](1.0'f32 / fpProbeDrei)
+  {.pop.}
+
 proc cortex_train_step_i8*(state: ptr CortexState, raw_in: ptr cint, raw_tg: ptr cint, raw_mask: ptr cint, num_tok: cint, lr: cfloat): cfloat {.ffi.} =
+  if fpProbeModus == -2: fpProbeLies()
+  if fpProbeModus >= 0:
+    fpProbeSetze(fpProbeModus.cint)
+    if not fpProbeGemeldet:
+      fpProbeGemeldet = true
+      var z = "  > [FPPROBE] Modus " & getEnv("SNAI_FP_RUNDUNG") & " (FE " & $fpProbeModus & ") Faeden " & $cOmpMaxThreads() & ":"
+      for k in 0 ..< min(256, cOmpMaxThreads().int): z.add(" f" & $k & "=" & $fpProbeRund[k] & "/" & $fpProbeBits[k])
+      stderr.writeLine(z)
   zeitMiss(ZA_GES):
     result = cortexTrainStepI8Roh(state, raw_in, raw_tg, raw_mask, num_tok, lr)
   zeitZeile()
+  if fpProbeModus >= 0: fpProbeSetze(cFeNaechster)
 
 proc satPct(qm: QMatrix): cfloat =
   var n = 0
@@ -8043,6 +8115,7 @@ var init_skip_fp32_weights = false
 var init_skip_adam_state = false
 var init_skip_fp32_kv = false        # FP32-k_cache/v_cache (im INT8-Pfad tot)
 var init_skip_backward_buffers = false  # Aktivierungshistorie/d_*/logits_cache (nur Training)
+var init_skip_grad_mat = false          # FULLINT8 Stufe 12: float-Gradientenpuffer der Matrizen (g_embeddings ... g_w_down)
 
 
 proc cortex_init*(vocab, dim, ffn, ctx, layers, heads: cint): ptr CortexState {.ffi.} =
@@ -8087,7 +8160,7 @@ proc cortex_init*(vocab, dim, ffn, ctx, layers, heads: cint): ptr CortexState {.
       m.rows = r.cint; m.cols = c.cint; m.data = nil
     else: m = allocMatrix(r, c)
   template initMA(m, r, c) =
-    if init_skip_adam_state:
+    if init_skip_adam_state or init_skip_grad_mat:
       m.rows = r.cint; m.cols = c.cint; m.data = nil
     else: m = allocMatrix(r, c)
   # SCHRITT 3: quantisiertes Moment-Paar. Legt bei aktivem Flag NUR die
@@ -8556,6 +8629,8 @@ proc cortex_save_stream_i8*(s: ptr CortexState, filepath_c: cstring,
   ## Fehler unbemerkt (Erfolg mit abgeschnittener Datei), und ein Fehlschlag
   ## hinterliess eine kaputte Datei unter dem Zielnamen.
   if s.isNil or s.weightDtype != 1: return 0
+  gzIoRundung(true)          # FULLINT8 Pruefwerkzeug SNAI_GZ_IO_RUNDUNG (ohne Variable ohne Wirkung)
+  defer: gzIoRundung(false)
   var f: File
   let tmpPfad = $filepath_c & ".savetmp." & $cGetpid()
   if not open(f, tmpPfad, fmWrite): return 0
@@ -8577,12 +8652,15 @@ proc cortex_save_stream_i8*(s: ptr CortexState, filepath_c: cstring,
     stderr.writeLine("[cortex] FATAL: Embedding-Eingangsfaktor ohne Bindung - SNAI_V6 kann Bit 1 nicht tragen.")
     return 0
   var magic: array[8, char]
-  let ms = (if tied: "SNAI_V7" else: "SNAI_V6")
+  # FULLINT8 Stufe 10: SNAI_V8 (Momente der int8-Matrizen als Code + Skala), nur mit Schalter SNAI_I8_GZ_CKPT
+  let v8 = gzV8Schreibbar(s)
+  let ms = (if v8: "SNAI_V8" elif tied: "SNAI_V7" else: "SNAI_V6")
   for i in 0 ..< ms.len: magic[i] = ms[i]
   wr(addr magic[0], 8)
   var hdr: array[7, uint32] = [vocab.uint32, dim.uint32, ffn.uint32, ctx.uint32, layers.uint32, 1'u32,
                                (if embEin: 3'u32 else: 1'u32)]
-  wr(addr hdr[0], (if tied: 28 else: 24))     # dtype INT8 = 1; V7 haengt flags an (Bit 0 = Tying, Bit 1 = EMB-EINGANG)
+  if v8: hdr[6] = (if tied: 1'u32 else: 0'u32) or (if embEin: 2'u32 else: 0'u32)    # V8: Flags-Feld immer, auch ungebunden
+  wr(addr hdr[0], (if tied or v8: 28 else: 24))     # dtype INT8 = 1; V7/V8 haengen flags an (Bit 0 = Tying, Bit 1 = EMB-EINGANG)
   let V = vocab.int
   let D = dim.int
   let F = ffn.int
@@ -8609,12 +8687,21 @@ proc cortex_save_stream_i8*(s: ptr CortexState, filepath_c: cstring,
         var w = newSeq[cfloat](max(1, n))
         cortex_extract_layer(s, l.cint, t.cint, addr w[0], n.cint)
         wr(addr w[0], n * sizeof(cfloat))
-      var m1 = newSeq[cfloat](max(1, n))
-      cortex_extract_adam_layer(s, l.cint, t.cint, false, addr m1[0], n.cint)
-      wr(addr m1[0], n * sizeof(cfloat))
-      var m2 = newSeq[cfloat](max(1, n))
-      cortex_extract_adam_layer(s, l.cint, t.cint, true, addr m2[0], n.cint)
-      wr(addr m2[0], n * sizeof(cfloat))
+      if v8 and t in [0, 1, 12, 13, 14, 15, 16, 17]:
+        # V8: [uint16 Zeilen][Zeilenskalen float32][Codes uint8] je Moment, die Darstellung im Speicher (nur kopiert)
+        for isv in [false, true]:
+          let qm = getQMomentPtr(s, l.cint, t.cint, isv)
+          var qc = uint16(qm.rows.int and 0xFFFF)
+          wr(addr qc, 2)
+          wr(qm.scale, qm.rows.int * sizeof(cfloat))
+          wr(qm.data, qm.rows.int * qm.cols.int)
+      else:
+        var m1 = newSeq[cfloat](max(1, n))
+        cortex_extract_adam_layer(s, l.cint, t.cint, false, addr m1[0], n.cint)
+        wr(addr m1[0], n * sizeof(cfloat))
+        var m2 = newSeq[cfloat](max(1, n))
+        cortex_extract_adam_layer(s, l.cint, t.cint, true, addr m2[0], n.cint)
+        wr(addr m2[0], n * sizeof(cfloat))
   tensor(-1, 0)
   if not tied: tensor(-1, 1)
   tensor(-1, 2)
@@ -9951,6 +10038,8 @@ proc cortex_load_stream*(filepath_c: cstring, num_heads: cint): ptr CortexState 
 
 proc cortex_load_stream_i8*(filepath_c: cstring, num_heads: cint): ptr CortexState {.ffi.} =
   last_load_error = LOAD_OK
+  gzIoRundung(true)          # FULLINT8 Pruefwerkzeug SNAI_GZ_IO_RUNDUNG (ohne Variable ohne Wirkung)
+  defer: gzIoRundung(false)
   let filepath = $filepath_c
   var f: File
   if not open(f, filepath, fmRead):
@@ -9971,9 +10060,9 @@ proc cortex_load_stream_i8*(filepath_c: cstring, num_heads: cint): ptr CortexSta
   var magicStr = ""
   for c in header.magic:
     if c != '\0': magicStr.add(c)
-  if magicStr != "SNAI_V6" and magicStr != "SNAI_V7":
+  if magicStr != "SNAI_V6" and magicStr != "SNAI_V7" and magicStr != "SNAI_V8":
     last_load_error = LOAD_ERR_MAGIC
-    stderr.writeLine("[cortex] FATAL: Magic '", magicStr, "' != 'SNAI_V6'/'SNAI_V7'.")
+    stderr.writeLine("[cortex] FATAL: Magic '", magicStr, "' != 'SNAI_V6'/'SNAI_V7'/'SNAI_V8'.")
     f.close()
     return nil
 
@@ -9981,7 +10070,8 @@ proc cortex_load_stream_i8*(filepath_c: cstring, num_heads: cint): ptr CortexSta
   # 36 statt 32 Byte). Bit 0 = Weight Tying: der w_out-Block FEHLT dann
   # vollstaendig in der Datei.
   var fileFlags: int32 = 0
-  let isV7 = (magicStr == "SNAI_V7")
+  let isV8 = (magicStr == "SNAI_V8")    # FULLINT8 Stufe 10: Kopf wie V7, Momente der int8-Matrizen als Code + Skala
+  let isV7 = (magicStr == "SNAI_V7") or isV8
   if isV7:
     if f.readBuffer(addr fileFlags, 4) != 4:
       last_load_error = LOAD_ERR_HEADER
@@ -10049,11 +10139,11 @@ proc cortex_load_stream_i8*(filepath_c: cstring, num_heads: cint): ptr CortexSta
   let payloadNoAdam = (embQBytes * embBlocks) + rmsBytes +
     nLayers.int64 * (rmsBytes * 2 + qkvQBytes * 4 + upQBytes + downQBytes)
 
-  let embMV = embSize.int64 * fBytes * 2
+  let embMV = (if isV8: 2 * q8Bytes(nVocab, embSize) else: embSize.int64 * fBytes * 2)
   let rmsMV = nDim.int64 * fBytes * 2
-  let qkvMV = dim2.int64 * fBytes * 2
-  let upMV = ffnSize.int64 * fBytes * 2
-  let downMV = ffnSize.int64 * fBytes * 2
+  let qkvMV = (if isV8: 2 * q8Bytes(nDim, dim2) else: dim2.int64 * fBytes * 2)
+  let upMV = (if isV8: 2 * q8Bytes(nFfn, ffnSize) else: ffnSize.int64 * fBytes * 2)
+  let downMV = (if isV8: 2 * q8Bytes(nDim, ffnSize) else: ffnSize.int64 * fBytes * 2)
 
   let payloadWithAdam = payloadNoAdam + (embMV * embBlocks) + rmsMV +
     nLayers.int64 * (rmsMV * 2 + qkvMV * 4 + upMV + downMV)
@@ -10092,7 +10182,11 @@ proc cortex_load_stream_i8*(filepath_c: cstring, num_heads: cint): ptr CortexSta
   # verweigert auf so einem State ohnehin bereits den Dienst).
   init_skip_fp32_kv = true
   init_skip_backward_buffers = not withAdam
+  # FULLINT8 Stufe 12: mit SNAI_I8_GZ_GFREI (und den Stufen 2, 3, 8) braucht der Schritt die float-Gradientenpuffer der
+  # Matrizen nicht - gar nicht erst anlegen (initMA legt sie dann mit Zeilen/Spalten, aber ohne Daten an).
+  init_skip_grad_mat = withAdam and not skipBaseAdam and gzGFrei()
   let s = cortex_init(nVocab.cint, nDim.cint, nFfn.cint, nCtx.cint, nLayers.cint, num_heads)
+  init_skip_grad_mat = false
   init_skip_fp32_weights = false
   init_skip_adam_state = false
   init_skip_fp32_kv = false
@@ -10262,7 +10356,26 @@ proc cortex_load_stream_i8*(filepath_c: cstring, num_heads: cint): ptr CortexSta
   # Artefakten (nur Gewichte) ist dieser Block ein No-Op, m/v bleiben auf dem
   # von cortex_init() gezeigten Nullwert (= korrekter Cold-Start).
   template rdAdamQ(pm, pv: pointer, mqp, vqp: ptr QMoment, count: int) =
-    if withAdam:
+    if withAdam and isV8:
+      # FULLINT8 Stufe 10: Code + Skala direkt in die QMomente, ohne Rechnung (Gegenstueck zum V8-Schreiben)
+      for qv in [mqp, vqp]:
+        var qc: uint16 = 0
+        if f.readBuffer(addr qc, 2) != 2: failLoad(LOAD_ERR_TRUNC)
+        let qr = qc.int
+        if qr == 0 or count mod qr != 0: failLoad(LOAD_ERR_SIZE)
+        if qv.isNil or qv.data.isNil or qv.scale.isNil:
+          if not pm.isNil:
+            stderr.writeLine("[cortex] FATAL: SNAI_V8 traegt 8-Bit-Momente, der Zustand hat keine (quantAdam=0).")
+            failLoad(LOAD_ERR_LAYOUT)
+          setFilePos(f, (qr * sizeof(cfloat) + count).int64, fspCur)     # LoRA-Speicherarm: Basis-Momente uebersprungen
+        else:
+          if qr != qv.rows.int or count != qv.rows.int * qv.cols.int: failLoad(LOAD_ERR_SIZE)
+          if f.readBuffer(qv.scale, qr * sizeof(cfloat)) != qr * sizeof(cfloat): failLoad(LOAD_ERR_TRUNC)
+          if f.readBuffer(qv.data, count) != count: failLoad(LOAD_ERR_TRUNC)
+          let sb = cast[ptr UncheckedArray[uint32]](qv.scale)
+          for r in 0 ..< qr:
+            if (sb[r] and 0x7F800000'u32) == 0x7F800000'u32 or sb[r] > 0x7F7FFFFF'u32: failLoad(LOAD_ERR_NAN)
+    elif withAdam:
       if pm.isNil and (mqp.isNil or mqp.data.isNil):
         # LoRA-Speicherarm: es gibt kein Ziel fuer diesen Block, weil er gar
         # nicht erst alloziert wurde. Die Bytes stehen aber in der Datei -

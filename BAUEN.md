@@ -30,7 +30,9 @@ php train_cluster.php <text.txt> <ausgabe.snai> <arbeiter> <epochen> <basis.snai
 
 - `none` als Basis startet von Grund auf (Genesis über `init_base.php`).
 - `dtype 3` ist der int8-Pfad der Messreihen, `1` der fp32-Vergleich.
-- Den vollständigen Ganzzahl-Stack schaltet `SNAI_INT8_FULL=1` ein.
+- Den int8-Stack schaltet `SNAI_INT8_FULL=1` ein. Ganz ganzzahlig (nur CPU) trainiert die Engine zusätzlich mit
+  `SNAI_I8_GANZ=12 SNAI_I8_REST=sr`; das setzt `SNAI_TIE_EMBEDDINGS=1` voraus und geht ohne LoRA, Dropout, Wachstum
+  und FFN-Skip, sonst bricht der Schalter mit einer Meldung ab.
 
 Die Rezepte der Messreihen nennen die genauen Aufrufe und Umgebungsvariablen. Ein typischer int8-Aufruf:
 
@@ -38,6 +40,17 @@ Die Rezepte der Messreihen nennen die genauen Aufrufe und Umgebungsvariablen. Ei
 SNAI_INT8_FULL=1 SNAI_TIE_EMBEDDINGS=1 OMP_NUM_THREADS=6 \
   php train_cluster.php text.txt out.snai 1 1 basis.snai 3 0.00005 0 1 0.1
 ```
+
+Derselbe Aufruf ganz ganzzahlig:
+
+```bash
+SNAI_FORCE_CPU=1 SNAI_INT8_FULL=1 SNAI_TIE_EMBEDDINGS=1 SNAI_I8_GANZ=12 SNAI_I8_REST=sr OMP_NUM_THREADS=6 \
+  php train_cluster.php text.txt out.snai 1 1 basis.snai 3 0.00005 0 1 0.1
+```
+
+Prüfschalter der Rundungsprobe (im Code enthalten, die Probenskripte nicht): `SNAI_FP_RUNDUNG=naechster|null|auf|ab`
+setzt den Rundungsmodus in allen Fäden, `SNAI_GZ_IO_RUNDUNG` gilt auch für Laden und Speichern, `SNAI_GZ_ROT_FLOAT=h|o|a`
+baut zur Gegenprobe eine float-Rechnung im Hauptfaden, in der OpenMP-Schleife oder im AVX-Pfad ein.
 
 ## Karte
 

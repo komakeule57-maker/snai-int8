@@ -230,11 +230,18 @@ class SnaiCortexBridge {
         // PHASE 6 DES INT8-UMBAUS: $native_int8 braucht load_model_header_any()
         // (versteht SNAI_V5 UND SNAI_V6) statt des bestehenden load_model_header()
         // (nur SNAI_V5, wuerde bei einer V6-Datei sofort sterben).
+        // FULLINT8 Stufe 10: SNAI_V8 gibt es nur nativ (kein float32-Weg) und nur mit 8-Bit-Momentspeicher - auch wenn der
+        // Aufrufer "nicht int8" meint (Messskripte fragen snai_is_int8_magic(), das V8 bewusst nicht kennt).
+        $fp_v8 = @fopen($filepath, 'rb');
+        if ($fp_v8) {
+            if (rtrim((string)fread($fp_v8, 8), "\0") === SNAI_MAGIC_V8) { $native_int8 = true; $quant_adam_memory = true; }
+            fclose($fp_v8);
+        }
         $header = $native_int8 ? load_model_header_any($filepath) : load_model_header($filepath);
         // Code-Review 2026-11-05 (A3-Rest): die() endet mit Exitcode 0; exit(1) meldet den Fehler dem Aufrufer.
         if (!$header) { fwrite(STDERR, "🚨 Fatal: Konnte Modell-Header nicht lesen.\n"); exit(1); }
-        if ($native_int8 && !snai_is_int8_magic($header['magic'])) {
-            fwrite(STDERR, "🚨 Fatal: \$native_int8=true erwartet eine SNAI_V6/V7-Datei, gefunden: {$header['magic']}\n");
+        if ($native_int8 && !snai_is_int8_ladbar($header['magic'])) {
+            fwrite(STDERR, "🚨 Fatal: \$native_int8=true erwartet eine SNAI_V6/V7/V8-Datei, gefunden: {$header['magic']}\n");
             exit(1);
         }
 
@@ -374,6 +381,24 @@ class SnaiCortexBridge {
         if ($this->ffi_save === false) return null;
         return $this->ffi_save->cortex_save_stream_i8($this->ffi_save->cast("void*", $this->state_ptr), $pfad,
             $this->vocab_size, $this->hidden_dim, $this->ffn_dim, $this->ctx_size, $this->num_layers) === 1;
+    }
+
+    // FULLINT8 Stufe 9 (2026-11-15): Lernratenplan in Festkomma. Die Parameter gehen einmal an die Engine; sie fuehrt
+    // den Plan ganzzahlig, wenn SNAI_I8_GZ_LRPLAN (bzw. SNAI_I8_GANZ >= 9) an ist, sonst speichert sie ihn nur.
+    // Eigenes cdef() wie bei save_stream_i8: eine aeltere libcortex.so ohne das Symbol bleibt ladbar.
+    // Rueckgabe: 1 uebernommen, 0 abgelehnt (Stufe an, Werte ungueltig), 2 verworfen (Stufe aus), null = kein Symbol.
+    private $ffi_lrplan = null;
+    public function gz_lr_plan(float $lr0, int $warmup, int $start, int $steps, float $min_ratio): ?int {
+        if ($this->ffi_lrplan === null) {
+            try {
+                $this->ffi_lrplan = FFI::cdef("int cortex_gz_lr_plan(float lr0, int warmup, int decay_start, int decay_steps, float min_ratio);",
+                    getenv('SNAI_CORTEX_LIB') ?: (__DIR__ . '/libcortex.so'));
+            } catch (\Throwable $e) {
+                $this->ffi_lrplan = false;
+            }
+        }
+        if ($this->ffi_lrplan === false) return null;
+        return (int)$this->ffi_lrplan->cortex_gz_lr_plan($lr0, $warmup, $start, $steps, $min_ratio);
     }
 
     // EMB-EINGANG / FFN-SKIP (2026-11-03): eigenes cdef() wie bei save_stream_i8 - eine aeltere libcortex.so ohne

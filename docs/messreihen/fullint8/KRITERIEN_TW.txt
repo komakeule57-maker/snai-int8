@@ -1,0 +1,39 @@
+snai/worker-minus1: Kriterien, festgelegt 2026-11-16 ~07:00 vor dem ersten Lauf (Entscheidung des Autors 16.11. ~07:00,
+interne Notiz Punkt 4: "Ja, mit Probe" - Worker bricht bei -1 mit rc != 0 ab, Rot-Probe, Normalfall bytegleich, lokal
+committet, nicht gepusht).
+Frage: Bricht train_worker.php nach dem Patch ab (Meldung, rc != 0, kein Checkpoint), wenn der Trainingsschritt einen
+negativen Wert (-1 = FATAL der Engine) zurueckgibt, auch wenn vorher Schritte gelungen sind - und bleibt jeder normale
+Lauf bytegleich?
+Befund vorab (Quelltext Hauptbaum 6539a6c): -1 kommt aus fuenf FATAL-Pruefungen am Anfang von cortexTrainStepI8Roh
+(cortex.nim 7341-7386) und aus cortex_train_step (float-Pfad). Ein gueltiger Loss ist nie negativ (Maske 0/1, Mittel
+ueber Cross-Entropy). train_worker.php:907 ff. prueft nur NaN/Inf. Der Master bricht nur ab, wenn gar kein Loss kommt
+oder ein Worker rc != 0 hat (gesehen in snai/fullint8-st12-gfrei Lauf 1).
+
+Aufbau: tw = cp -a proj_hb (= Hauptbaum 6539a6c, Lib dca24a87). patch_tw.py aendert train_worker.php an EINER Stelle
+(assert alt in quelle, genau einmal): direkt vor der NaN-Pruefung "if ($loss < 0) { Meldung [Fatal] ...; exit(1); }",
+gemeinsam fuer int8- und float-Pfad. Sonst nichts.
+Rot-Werkzeug: twrot = tw, aber mit der Lib aus Lauf 1 der Stufe 12 (Sperre gibt nur -1 zurueck), nachgebaut aus
+cortex.nim e850a14d (st11/cortex.nim b9263995 + patch_gfrei_6c305248.py.bak) + cortex_gz.nim ae179d20. Erwartet md5
+024c34f6; weicht sie ab, wird das berichtet, die Probe zaehlt dann, wenn die Sperre im Log FATAL ohne "Prozess beendet"
+meldet (also -1 zurueckgibt). twrot_alt = twrot mit dem alten train_worker.php 4732351c.
+
+K1 Rot vorher (Fehler reproduziert): twrot_alt, GANZ=12 + SNAI_GZ_GFREI_ROT=1, Genesis-Kurzlauf, 1 Faden: rc 0 und ein
+   Checkpoint (wie Lauf 1, damals 563a6f3a). ergebnis/TW_* vor jedem Lauf loeschen (Fallstrick interne Notiz).
+   Bleibt K1 aus (rc != 0 oder kein Checkpoint), ist der Fehler nicht reproduziert: Probe ungueltig, Abhilfe suchen.
+K2 Rot nachher: twrot (neuer train_worker), derselbe Aufruf: die neue [Fatal]-Meldung im Log, Worker rc != 0, der Master
+   bricht die Epoche ab, kein Checkpoint, rc der Kette != 0.
+K3 Normalfall bytegleich (tw, neuer train_worker, Lib dca24a87, probe_iso_basis): Kurzlauf GANZ=0 = 0f79d04c, 2 Worker
+   GANZ=0 = 3eb4a5f8, Segment 0 GANZ=0 (2 Faeden) = 7063ce99, Kurzlauf GANZ=12 = 759ba426, 2 Worker GANZ=12 = 36fba098,
+   Fortsetzung GANZ=12 aus ergebnis/K1_g11.snai = 389a20ff; je Lauf keine neue [Fatal]-Zeile.
+Nach Zweitmeinung (16.11. ~07:03) ergaenzt: K1 berichtet zusaetzlich die Zahl der FATAL-Meldungen der Sperre im Log
+   (= verweigerte, still uebersprungene Schritte) gegen die Zahl der gemeldeten Schritte. K2 verlangt, dass der Abbruch
+   von der NEUEN Meldung "Trainingsschritt verweigert" kommt: diese Zeile im Log, keine andere [Fatal]-Zeile des Workers,
+   kein Absturz (Signal/rc 139); nur dann zaehlt rc != 0. Verworfen: "Loss nahe 0 / -0.0 loest aus" (-0.0 < 0 ist falsch,
+   kleine positive Werte bleiben); "NaN" (in PHP ist NaN < 0 falsch, die bestehende NaN-Pruefung greift wie bisher);
+   "md5 aus dem alten Worker" (genau das ist die Probe: neuer Worker muss dieselben Bytes liefern); "float-Pfad koennte
+   gueltig negativ sein" (Cross-Entropy -log p mit p = exp(x-max)/Summe <= 1, da der Zaehler ein Summand der Summe ist).
+Urteil: erfuellt = K1, K2 und K3. Deterministisch, eine Saat (s1).
+Reichweite: int8-Pfad im Genesis- und Fortsetzungsweg, 1 und 2 Worker. Der float-Pfad (cortex_train_step) ist von
+derselben Zeile abgedeckt, aber nicht eigens gefahren (der Hauptbaum trainiert int8); dort kann ein gueltiger Loss
+ebenfalls nicht negativ sein.
+Rechner: rechner-a, 1-2 Faeden, nice 15, wenige Minuten (plus Segment 0 ca. 5 min).

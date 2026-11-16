@@ -239,7 +239,8 @@ echo "  > [Heads] $num_heads Attention-Heads (headSize=" . intdiv($model_dim, $n
 $fp_magic = fopen($base_model, 'rb');
 $base_model_magic = rtrim(fread($fp_magic, 8), "\0");
 fclose($fp_magic);
-$base_already_int8 = snai_is_int8_magic($base_model_magic);
+$base_already_int8 = snai_is_int8_ladbar($base_model_magic);   // FULLINT8 Stufe 10: V8 laedt nativ wie V6/V7
+$base_model_flags = ($base_model_magic === SNAI_MAGIC_V8) ? (int)((load_model_header_any($base_model) ?? [])['flags'] ?? 0) : 0;
 $dtype_requested_int8 = ($dtype === SNAI_CLI_DTYPE_INT8);
 
 if ($base_already_int8 && !$dtype_requested_int8) {
@@ -261,7 +262,7 @@ if ($base_already_int8 && !$dtype_requested_int8) {
 // Modell ab der zweiten Epoche als ungebundenes weiter und niemand merkt es).
 // Das gilt auch fuer ein ausdrueckliches =0: die Bindung einer V7-Datei laesst
 // sich nicht per Umgebungsvariable aufloesen, dafuer gibt es kein w_out.
-$base_already_tied = ($base_model_magic === SNAI_MAGIC_V7);
+$base_already_tied = snai_datei_gebunden($base_model_magic, $base_model_flags);   // V7 immer, V8 nach Flag-Bit 0
 [$tie_default_on, $tie_explicit] = snai_tie_embeddings();
 
 // GRENZE DES DEFAULTS, und sie ist nicht kosmetisch: nachtraegliches Binden
@@ -868,6 +869,11 @@ for ($e = 1; $e <= $epochs; $e++) {
             {
                 if ($warmup_t0 === null) {
                     $warmup_t0 = (int)$cortex->get_adam_t();
+                    // FULLINT8 Stufe 9 (2026-11-15): Plan-Parameter einmal an die Engine (wirkt nur mit SNAI_I8_GZ_LRPLAN bzw.
+                    // SNAI_I8_GANZ >= 9). Der Wert unten bleibt Protokoll und Wache. Ablehnung bei eingeschalteter Stufe = Abbruch.
+                    if ($is_int8 && $cortex->gz_lr_plan((float)$initial_lr, $warmup_steps, $lr_decay_start, $lr_decay_steps, (float)$lr_min_ratio) === 0) {
+                        worker_abbruch("🚨 cortex_gz_lr_plan() lehnt den Lernratenplan ab (W=$warmup_steps, S=$lr_decay_start, D=$lr_decay_steps, m=$lr_min_ratio) - Abbruch.\n");
+                    }
                     if ($warmup_steps > 0) echo "  > [Warmup] $warmup_steps Schritte, Start bei adam_t=$warmup_t0, Ziel-LR $initial_lr\n";
                     if ($lr_decay_steps > 0) echo "  > [LR-Decay] Cosinus ab adam_t=$lr_decay_start bis adam_t=$lr_decay_steps, Boden " . sprintf('%.7f', $initial_lr * $lr_min_ratio) . ", Start bei adam_t=$warmup_t0\n";
                 }
@@ -911,6 +917,15 @@ for ($e = 1; $e <= $epochs; $e++) {
                 $loss = max(0.001, 0.99 * (1.0 / (($global_step * 0.01) + 1)));
             }
 
+            // FATAL DER ENGINE (2026-11-16, messbuch snai/worker-minus1): cortex_train_step_i8() und cortex_train_step()
+            // geben -1 zurueck, wenn sie den Schritt verweigern (Inferenz-Artefakt, LoRA ohne gebuendelten Pfad, ...).
+            // Ein gueltiger Loss ist nie negativ. Ohne diese Pruefung trainierte der Worker still mit uebersprungenen
+            // Schritten weiter und schrieb einen Checkpoint, solange ein frueher Schritt noch einen Loss geliefert hatte.
+            if ($loss < 0) {
+                $err_step = $steps + 1;
+                echo "🚨 [Fatal] Worker " . getmypid() . " | Trainingsschritt verweigert (Rueckgabe $loss, Meldung der Engine oben) bei Step $err_step! Breche ab.\n";
+                exit(1);
+            }
             // AUDIT-FIX: Off-by-one Logging Bug behoben
             if (is_nan($loss) || is_infinite($loss)) {
                 $err_step = $steps + 1;
@@ -1045,7 +1060,7 @@ if ($lora_active && $cortex->lora_base_opt_freed()) {
     // misst also ein Modell, das im Training nie existiert hat.
     // Richtiger Weg fuer Arm D: eine echte V7-Basisdatei vorbauen und die als
     // $base_model uebergeben (Arm D).
-    if ($cortex->tied_embeddings_active() && $base_model_magic !== SNAI_MAGIC_V7) {
+    if ($cortex->tied_embeddings_active() && !$base_already_tied) {
         worker_abbruch("🚨 [Fatal] Worker " . getmypid() . ": Weight Tying ist aktiv, die Basisdatei "
           . "ist aber $base_model_magic. Der Kopier-Kurzschluss wuerde ein UNGEBUNDENES "
           . "Artefakt schreiben, waehrend die Adapter gegen einen gebundenen Forward "

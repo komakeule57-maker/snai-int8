@@ -9,18 +9,22 @@ authors:
 repository-code: "https://github.com/komakeule57-maker/snai-int8"
 url: "https://github.com/komakeule57-maker/snai-int8"
 license: Apache-2.0
-version: "0.0.3"
-date-released: "2026-11-15"
+version: "0.2.0"
+date-released: "2026-11-16"
 abstract: >-
   A research engine for int8 training of small transformer language models:
   int8 weights, integer matmuls in forward and backward with int32 gradient
-  accumulation, and 8-bit Adam moments. Normalization, softmax, loss and the
-  optimizer update are still computed in float. With SNAI_I8_REST=sr there
-  is no per-weight floating-point state across steps. The engine is written
-  in Nim with CPU (OpenMP), CUDA and OpenCL backends that are bit-identical
-  to the CPU reference. The repository also contains the research log:
-  measurement series, each with a pre-registered criterion, recipe, raw
-  values and verdict.
+  accumulation, and 8-bit Adam moments. In the default path, normalization,
+  softmax, loss and the optimizer update are computed in float. With the
+  switch SNAI_I8_GANZ=12, training runs entirely in integer arithmetic on the
+  CPU, including attention softmax, RMSNorm, cross-entropy and an integer
+  Adam update; a 0.37M-parameter model trained this way ends
+  0.6-1.3 % above a paired float32 PyTorch baseline (3 seeds, 25,000 steps),
+  and all four FPU rounding modes give byte-identical checkpoints. The
+  engine is written in Nim with CPU (OpenMP), CUDA and OpenCL backends that
+  are bit-identical to the CPU reference; the GPU paths are not integer yet.
+  The repository also contains the research log: measurement series, each
+  with a pre-registered criterion, recipe, raw values and verdict.
 keywords:
   - int8 training
   - quantized training

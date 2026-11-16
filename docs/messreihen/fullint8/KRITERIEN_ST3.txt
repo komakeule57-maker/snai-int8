@@ -1,0 +1,45 @@
+snai/fullint8-st3-adam: Kriterien, festgelegt 2026-11-15 vor den gezaehlten Laeufen (PLAN.md Abschnitt 8, ZIEL.md).
+Frage: Rechnen Clip-Norm, Adam der Matrizen (8-Bit-Log-Momente) und Adam der Gains (SNAI_I8_GANZ=3) ohne
+Gleitkomma, mit demselben Ergebnis wie der alte float-Adam (bis auf Rundungsgrenzen) und ohne Qualitaetsverlust
+gegen Stufe 2?
+Aufbau: proj_gz/st3 = Hauptbaum 1a8edde + patch_s0.py + patch_gz.py 9270b63a (3 Ersetzungen; die dritte haengt
+gzOptSchritt vor der alten Nachbereitung ein, nur bei Stufe >= 3) + cortex_gz.nim f7feacde, Lib 2405ae7d.
+(Erster Entwurf 6d9b23b5/Lib 0dfb8e1f lief einmal als Rauchtest T3; danach nach Pruefer-Einwand Selbsttest ergaenzt.)
+Entwurf (cortex_gz.nim, Abschnitt "Stufe 3"): S = 1/max(Norm, N); Momente per Q38-Tabelle entpackt, b1/b2 als exakte
+Q24-Brueche der float32-Werte, K = lr*sqrt(b2t)/b1t, Schritt K*m/(sqrt(v)+eps*sqrt(b2t)) mit ganzzahliger Wurzel und
+Division; Ziel in Festkomma je Zeile, Skala max/127 als 24-Bit-Mantisse, Runden ueber Hash-Bits; Momente per log2-
+Tabelle (Q32) zurueck in den Code. Gains: Exponent je Tensor; ihre Momente m, v float32-Ablage, gelesen als 24-Bit-
+Mantisse mit Exponent je Element. Tabellen einmal in float64 im Modus "naechster". Gains-Gradient und Lookup-Anteil
+des Embedding-Gradienten kommen bis Stufe 4 bzw. 8 aus float-Bausteinen (Kleber: float32 bitweise zerlegt).
+Bekannter Unterschied zum alten Pfad, nicht gezaehlt: NaN in einem float-Gain-Gradienten setzt alt alle Gradienten
+auf 0 (Clip-Art 2), hier wird nur das Element uebersprungen.
+
+K1 Kontrolle: Lib 2405ae7d, Kurzlauf 232 Schritte: Stufe 0 = Basis 0f79d04c, Stufe 1 = 47176fa4, Stufe 2 = 12e40925
+   (= Werte der Lib 4d20c9f3), Stufe 3 zweimal gleich (deterministisch). Damit gelten die st2-Laeufe der Reihe
+   snai/fullint8-st2-matmul als Vergleichsarm. (Mit der Rauchtest-Lib 0dfb8e1f schon einmal so gesehen.)
+K2 Bausteinprobe (SNAI_GZ_KERN=1, Stufe 3, erster Schritt): der ganze Optimiererschritt (Norm, Skalare, alle
+   Matrizen parallel, Gains) unter FE_UPWARD in allen OpenMP-Faeden und unter FE_TONEAREST bytegleich: jede Zeile
+   "adam ... gleich", "adam Norm gleich". Rot (SNAI_GZ_KERN_ROT=1, je Zeile eine float32-Multiplikation im Ziel):
+   mindestens eine "adam ..."-Zeile "ABWEICHEND".
+K2b Selbsttest der Hilfsfunktionen (nach Pruefer-Einwand, mit K2): 200.000 Zufallswerte; log2 (Q32) max. Fehler
+   <= 1e-6; isqrt 0 falsch; float32-Bau (gzZuF32) <= 0,5 ulp; Rundreise gzMulF/gzZuF32 0 falsch; Q38-Tabellen rel.
+   <= 1e-6 zu adamTabM/adamTabV. Rot (SNAI_GZ_KERN_ROT=1, Referenzen um bekannte Spur verschoben): alle fuenf schlagen an.
+K3 Vergleich mit dem alten float-Adam (SNAI_GZ_ADAMVGL=t, alter Weg = clipGlobalGradientNorm +
+   applyGlobalAdamUpdateI8 unveraendert aufgerufen; beide zum Naechsten gerundet: SNAI_I8_MOM_SR und REST
+   fuer diesen Schritt aus; gleicher Ausgangszustand und gleiche Gradienten), bei t = 1 und t = 150 (Kurzlauf,
+   LR 3e-4) und t = 3000 (Segment 0, Saat s1, nach Pruefer-Einwand: spaet im Lauf, LR im Abklingen):
+   - Norm: rel. Abstand <= 2e-3;
+   - je Matrix: Gewichtscodes gleich >= 99,5 %, max |dw| <= 1; m- und v-Codes gleich >= 99 %, max |dm|, |dv| <= 1;
+     Zeilenskalen (Gewicht, m, v) rel. <= 1e-4;
+   - je Gain-Tensor: relL2 des Schritts <= 1e-2, relL2 von m und v <= 1e-3.
+   Rot (SNAI_GZ_ADAMVGL_ROT=1: K um +10 % verfaelscht), t = 150: mindestens eine Matrix verfehlt "w gleich >= 99,5 %".
+K4 Qualitaet: Segment 0 (5.001 Schritte), Saaten s1-s3 gepaart (gleicher Armname), Held-out 300 Fenster;
+   d = (st3 - st2)/st2 <= +2 % in 3 von 3, sonst Haltepunkt (ZIEL.md). Gleichstand (|d| < 10 %) ist das erwartete
+   Ergebnis; ein Gewinn wird nicht als Befund gelesen.
+K5 Messgeraet: in jedem K4-Lauf die Zeilen "[GZ] adam_t=... Saettigungen" ansehen, bevor das Urteil gelesen wird;
+   jede Saettigung > 0 macht den Lauf verdaechtig (Ursache vor dem Urteil).
+Urteil: erfuellt = K1-K5. Saaten 3, Regel 3 von 3; bei Uneinigkeit: saatabhaengig, kein Schluss.
+Pruefer (Zweitmeinung 15.11., Gemini/Mistral): Einwaende Selbsttest und spaeter Vergleichspunkt uebernommen;
+verworfen: 'Rot-Probe entwertet K2' (die eingebaute float-Rechnung ist der Zweck der Rot-Probe), 'lokale Norm'
+(die Norm ist global), 'Gains als Codes verglichen' (eigene Kriterien), 'float64-Tabellen ueberfluessig'.
+Reichweite: Knirps 96x2, ein Datensatz (Nano-Geschichten), CPU, 2 Faeden.

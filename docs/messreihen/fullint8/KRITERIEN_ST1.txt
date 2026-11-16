@@ -1,0 +1,16 @@
+snai/fullint8-st1-geruest: Kriterien, festgelegt 2026-11-15 vor dem ersten gezaehlten Lauf (PLAN.md Abschnitt 8, ZIEL.md).
+Frage: Rechnet das GZ-Geruest (SNAI_I8_GANZ=1: eigener Vorwaerts/Rueckwaerts, jeder Baustein in float-Referenz =
+Rechnung des alten Pfads) dieselben Gradienten und dieselbe Qualitaet wie der alte gebuendelte CPU-Pfad?
+Aufbau: proj_gz = Hauptbaum 1a8edde + patch_s0.py + patch_gz.py + cortex_gz.nim (Lib-md5 beim Start im Rezept).
+Rezept wie snai/sr-knirps-nachweis (Knirps 96x2, Nano-Geschichten, INT8_FULL, REST=sr, gebunden, Warmup 500,
+LR 0,001 Cosinus bis 25.000, Revival aus, CPU, 2 Faeden).
+K1 Kontrolle: SNAI_I8_GANZ=0 mit der GZ-Lib ist bytegleich zur Basis-Lib (Kurzlauf probe_s0.sh, md5 0f79d04c).
+K2 Gradienten (SNAI_GZ_VERGL=1, erster Schritt auf Genesis s1, kurz_seg0.txt): je Tensor relativer L2-Abstand
+   <= 0,05 UND Kosinus >= 0,995 gegen den alten Pfad. Rot-Probe des Werkzeugs (SNAI_GZ_VERGL_ROT=1, g_w_o[0] +10 %)
+   MUSS g_w_o[0] mit relL2 >= 0,09 melden, alle anderen Tensoren wie ohne Rot.
+K3 Qualitaet: Segment 0 (5.001 Schritte), Saaten s1, s2, s3 (Genesis gesch_gen_d96h6L2_sN, gleicher Armname je Paar),
+   Held-out mess_text.php 300 Fenster nach Segment 0. Je Saat d = (GZ1 - alt) / alt. Erfuellt: d <= +2 % in 3 von 3.
+   Liegt ein d ueber +2 %: Haltepunkt (ZIEL.md). Gleichstand unter 10 % ist hier NICHT das Kriterium, sondern die
+   2-%-Haltegrenze je Schritt aus ZIEL.md.
+Fehlerkanal: Trainingslogs auf unerwartete Meldungen pruefen (bekannt: RESIDENT ohne CUDA-Lib).
+Urteil: erfuellt = K1, K2, K3; sonst verfehlt (Geruest reparieren, bevor ein Baustein ganzzahlig wird).

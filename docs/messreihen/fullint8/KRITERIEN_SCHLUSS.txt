@@ -1,0 +1,80 @@
+snai/fullint8-schluss: Kriterien der Schlussprobe, festgelegt 2026-11-15 vor dem ersten Schlusslauf (ZIEL.md, PLAN.md S10,
+weitergereichte Entscheidungen des Autors ueber die Veroeffentlichung: Gesamtvergleich alle an gegen heute,
+Einzelvergleiche je Stufe, Knirps 96x2, gepaart, mehrere Saaten, < 10 % = Gleichstand, float64-Bezug und Rot-Probe je Stufe;
+Absprache mit der Veroeffentlichung 15.11.: Schlusslaeufe >= 25.000 Schritte, Langvergleich fuer REST und ADAM,
+Telemetrie alle 1000 Schritte).
+Frage: Trainiert die int8-Engine mit SNAI_I8_GANZ=10 (alle Stufen an) vollstaendig ganzzahlig, also unabhaengig vom
+Rundungsmodus der FPU, und haelt sie dabei die Qualitaet von float32 (PyTorch) innerhalb von 5 %?
+
+Aufbau: Kopien sch_* = st10 (Hauptbaum 1a8edde + patch_s0.py + patch_gz.py ed29d20f + patch_v8.py, cortex.nim b9263995)
+mit cortex_gz.nim fa4a951b (= Stufe 10 20bad39c + Telemetrie + Rot-Schalter der Schlussprobe), Lib 96f136e4 (bau11);
+PHP = patch_lr.py + patch_v8php.py d780540f. Alle Kopien bytegleich bis auf den Ordnernamen; die Arme unterscheiden sich
+NUR in Umgebungsvariablen (ein Stellrad je Vergleich). Rezept wie alle K4-Reihen (reihe_gz.sh/lauf_gz.sh): REST=sr,
+INT8_FULL, gebunden, Warmup 500, Cosinus 0,001 -> 0,0001 bis 25.000, WD 0,1, ohne Label-Glaettung, 1 Worker, CPU, 2 Faeden,
+nice 15, Genesis s1-s3 (34242aac/b7ba6266/3c4c6939), gleicher Armname = gleiche Fensterfolge (gepaart).
+Werkzeuge: probe_iso_basis.sh 2fc813aa (PROBE_IN=seg0 = ganzes Segment 0, 5.001 Schritte), Rundungsmodus SNAI_FP_RUNDUNG
+(S0, fesetround in allen OpenMP-Faeden waehrend cortex_train_step_i8) und SNAI_GZ_IO_RUNDUNG (Speichern/Laden im selben
+Modus); Rot-Schalter SNAI_GZ_ROT_FLOAT = h (Hauptfaden: Schrittfaktor K ueber float32 * (1+2^-23)), o (OpenMP-Schleife des
+Adam: Zeilenskala * (1+2^-23) in float32), a (AVX: _mm256_mul_ps auf die Zeilenskalen des Embeddings); Telemetrie
+SNAI_GZ_TELE_N (Vorgabe 1000).
+Rauchtest vor diesen Kriterien (nicht gezaehlt, Lib 96f136e4, Kurzlauf 232 Schritte): GANZ=0 = 0f79d04c, GANZ=10 =
+759ba426 (= Lib 969a56ee, Telemetrie aendert nichts); Telemetrie alle 50 Schritte lesbar; weitere Rauchwerte im Messbuch.
+Aktive Nebenmechanismen: Revival aus (lauf_gz.sh prueft), Rescale aus (S0), Clipping an (Teil von Stufe 3), v-Klemme in der
+Vorgabe, NET2NET-Waechter in der Vorgabe (Meldungen werden gezaehlt). Kein bekannter Defekt offen.
+
+R  Rundungsprobe (ZIEL Punkt 1, tragend). sch_rund, GANZ=10, Saat s1, Segment 0 ganz (5.001 Schritte), je ein Lauf in den
+   Modi naechster, null, auf, ab (SNAI_FP_RUNDUNG und SNAI_GZ_IO_RUNDUNG gleich gesetzt; naechster = ohne IO-Variable).
+   Bestanden: alle vier Checkpoints (SNAI_V8) bytegleich, STEPS_DONE 5001, rc 0.
+   Rot (Gegenprobe, tragend): je Variante h, o, a dieselben Laeufe in naechster und auf; der Checkpoint in auf muss von
+   naechster abweichen. Gleicht er ihm, werden fuer diese Variante null und ab nachgefahren; bleibt die Variante in allen
+   drei Modi gleich, ist die Probe fuer diesen Weg blind: dann Abhilfe laut PLAN.md Abschnitt 2 (Modus in der betroffenen
+   Region eigens setzen) und R ganz wiederholen. Kontrolle: Rot-Variante in naechster weicht vom gruenen naechster ab (die
+   eingebaute Rechnung wirkt ueberhaupt).
+Q  Qualitaet (ZIEL Punkt 2, tragend). sch_alle, GANZ=10, s1-s3, 5 Segmente (25.005 Schritte). Held-out mess_text.php 300
+   Fenster nach Segment 4. Je Saat q = (alle - PyTorch)/PyTorch gegen snai/geschichten-pytorch m625-m627
+   (2,2357 / 2,2385 / 2,2326, gleiche Genesis und Fensterfolge). Bestanden: q <= +5 % in 3 von 3 Saaten. Verfehlt eine
+   Saat: Haltepunkt, Schwelle bleibt, Wege an den Autor.
+G  Gesamtvergleich (berichtet, Entscheidung des Autors). sch_heute, GANZ=0, sonst wie Q. d = (alle - heute)/heute je Saat
+   gepaart, Mittel und Paare berichtet; |Mittel d| < 10 % = Gleichstand; >= 10 % und 3/3 gleichgerichtet = Richtung; sonst
+   kein Schluss. Kontrolle (berichtet): sch_heute Segment 4 bytegleich zu snai/sr-knirps-nachweis Arm B
+   (53c19588 / e376eb28 / 8d399d88), Segment 0 = ec75ac57 / 4e7a6c53 / b15d1d26 (st0).
+E  Einzelvergleiche lang (Haltepunkt-Regel des Ziels: kein Einzelschritt > 2 %). sch_orest = GANZ=10 + SNAI_I8_GZ_REST=0,
+   sch_oadam = GANZ=10 + SNAI_I8_GZ_ADAM=0 (Stufe 9 dann laut Schalter ohne Wirkung, alter float-Adam mit 8-Bit-Momenten,
+   V8 wird weiter geschrieben), sonst wie Q. d_X = (alle - ohne X)/ohne X je Saat: <= +2 % in 3 von 3, sonst Haltepunkt;
+   |d| < 10 % Gleichstand. Die uebrigen Stufen (2, 4-7, 9, 10) haben ihren Einzelvergleich ueber ein bzw. zwei Segmente samt
+   float64-Bezug und Rot-Probe in ihrer Reihe (snai/fullint8-st1 ... -st10); er wird hier zitiert, nicht wiederholt.
+K  Messgeraet (vor dem Urteil, jeder Lauf): rc 0, STEPS_DONE 5001 je Segment, NET2NET-GUARD-Zahl, Saettigungen Adam und
+   Restpfad je Bericht (fehlende Zahl nach Zeilenbruch = verschluckte "0", interne Notiz; mit Folgezeile lesen),
+   LR-Wache: kein Abbruch, groesste Abweichung berichtet, Telemetrie-Zeilen alle 1000 Schritte (nur mit Stufe 3),
+   Magic der Segmentdateien (GZ-Arme SNAI_V8, sch_oadam V8, sch_heute V7), mess.jsonl ohne Fehlerzeile, Rot-Probe der
+   Messung (sabotage 1) wie bisher > 8.
+T  Telemetrie (berichtet, kein Kriterium): Anteil Nullgradienten und geaenderter Codes je Matrix, Restpfad log2 je Schicht,
+   alle 1000 Schritte in sch_alle und sch_orest. Gegen den Jatai-Ausfall nach 3.000-4.000 Schritten (de Almeida 2026, github.com/kdilim/jatai) gelesen:
+   ein stetiger Anstieg der Nullgradienten oder ein Abfall der Codeaenderungen gegen 0 vor dem Ende waere zu berichten.
+   Rot der Sonde (Rauchtest-Lauf, nicht im Urteil): SNAI_GZ_TELE_ROT=1 zeigt q0 100 % Nullgradienten und ~0 % geaenderte
+   Codes im Berichtsschritt.
+L  README-Liste (ZIEL Punkt 3): je Posten der Liste "Noch in float" (snai-int8 README Stand v0.0.2) die Reihe, die ihn
+   ganzzahlig belegt, oder der Grund, warum er bleibt; Fassung in ERGEBNIS_SCHLUSS.md. Erfuellt, wenn jeder gestrichene
+   Posten eine Reihe mit Urteil erfuellt hat und uebrig nur die erlaubten Ausnahmen (Tabellen einmal beim Start, LR-Plan in
+   Festkomma, Protokollausgaben; laut Autor auch Skalare und Skalen) bleiben. Posten, deren Einordnung die Definition
+   nicht eindeutig deckt (float32 als Speicherformat ganzzahlig gebildeter Werte; Mitteln mehrerer Worker), entscheidet der
+   Autor; bis dahin ist L offen, nicht erfuellt.
+Grenzen der Rundungsprobe (vorab vermerkt): Sie sieht float-Rechnung, deren Ergebnis vom Rundungsmodus abhaengt; exakte
+float-Operationen (bitgenaues Zerlegen von float32-Konstanten, kleine Ganzzahlen) sieht sie nicht, die sind fuer die
+Definition unschaedlich (PLAN.md Abschnitt 2). Sie deckt den Trainingsschritt (cortex_train_step_i8) und Speichern/Laden
+in Nim ab. Ausserhalb liegen, im Modus naechster: das einmalige Quantisieren der float-Genesis (SNAI_V5, 34242aac) beim
+Start = Initialisierung, nicht Trainingsschritt, in L als eigener Posten genannt; PHP zwischen den Schritten (Datenfenster
+ganzzahlig, LR-Wert nur Wache und Protokoll); Tabellen beim ersten Gebrauch (im Modus naechster fest gebaut, Ausnahme a).
+Laufzeit je Segment und Arm berichtet, kein Kriterium.
+Pruefer (Zweitmeinung 15.11., Aufbau): Gemini 'OpenMP-Reduktionen nicht deterministisch, Probe faelschlich rot' (in jeder
+Stufe K1 gemessen: zwei Laeufe gleich, 1 Faden = 2 Faeden; Summen sind int64 und damit reihenfolgefest; eine falsche Roete
+fiele auf, eine falsche Gruene kann daraus nicht entstehen); 'fesetround fadenlokal' (S0 K1: jeder OpenMP-Faden meldet den
+Modus; Variante o prueft es). Mistral 'gruene Probe sieht exakte float-Rechnung nicht' (stimmt, als Grenze vermerkt);
+'Ladepfad ungeprueft' (Speichern/Laden laufen per SNAI_GZ_IO_RUNDUNG im selben Modus; die Genesis ist SNAI_V5 und wird
+ausserhalb quantisiert, jetzt als Grenze vermerkt - der berechtigte Teil des Einwands); 'Ausnahmen undefiniert' (ZIEL.md
+Punkt 3 und die Weitergabe des Autors nennen sie); 'float-Weg ungeprueft' (PyTorch-Bezug mit eigenen Gegenproben
+G1/G2 in snai/geschichten-pytorch; Q vergleicht direkt gegen PyTorch, nicht ueber den float-Weg).
+Urteil: Ziel erreicht = R, Q und L erfuellt, kein Haltepunkt aus E, K ohne Befund. Saaten 3 (R: 1 Saat, deterministisch,
+4 Modi); Regel 3 von 3; bei Uneinigkeit in E: saatabhaengig, kein Schluss.
+Reichweite: Knirps 96x2 gebunden, ein Korpus (Nano-Geschichten), 25.000 Schritte, CPU, 2 Faeden, 1 Worker, rechner-a.
+Nicht Teil der Aussage: Karte (CUDA/OpenCL), mehrere Worker, laengere Laeufe, andere Groessen.

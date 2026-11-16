@@ -1,0 +1,15 @@
+snai/fullint8-st2-matmul: Kriterien, festgelegt 2026-11-15 vor den gezaehlten Laeufen (PLAN.md Abschnitt 8, ZIEL.md).
+Frage: Rechnen die ganzzahligen Matmuls (vorwaerts, d_in rueckwaerts, Gradientenakkumulation in den int32-Puffer mit
+Exponent je Zeile; SNAI_I8_GANZ=2) ohne Gleitkomma, mit denselben Gradienten wie der alte Pfad und ohne
+Qualitaetsverlust gegen Stufe 1?
+Aufbau: proj_gz/st1b/st2 = Hauptbaum 1a8edde + patch_s0.py + patch_gz.py + cortex_gz.nim f93402e0, Lib 4d20c9f3.
+Hinweis: Stufe 1 rechnet mit dieser Lib nicht bytegleich zur Stufe-1-Lib b990e8fa (Logits laufen jetzt durch das
+GzT-Zeilenformat); deshalb ist der Vergleichsarm st1b Stufe 1 MIT DERSELBEN Lib, nicht die st1-Laeufe.
+K1 Kontrolle: SNAI_I8_GANZ=0 mit Lib 4d20c9f3 bytegleich zur Basis (Kurzlauf, md5 0f79d04c).
+K2 Bausteinprobe (SNAI_GZ_KERN=1, erster Schritt): jeder Aufruf von matfwd, matbw-din, matbw-grad unter FE_UPWARD
+   und FE_TONEAREST bytegleich ("gleich"). Rot (SNAI_GZ_KERN_ROT=1, eine float-Rundung in matfwd): mindestens ein
+   Aufruf "ABWEICHEND".
+K3 Gradienten (SNAI_GZ_VERGL=1, Stufe 2): je Tensor relL2 <= 0,05 und Kosinus >= 0,995 gegen den alten Pfad.
+K4 Qualitaet: Segment 0, Saaten s1-s3 gepaart (gleicher Armname), Held-out 300 Fenster; d = (st2 - st1b)/st1b
+   <= +2 % in 3 von 3, sonst Haltepunkt.
+Urteil: erfuellt = K1-K4.

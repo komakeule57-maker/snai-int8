@@ -1,0 +1,37 @@
+snai/fullint8-st7-logits: Kriterien, festgelegt 2026-11-15 vor den gezaehlten Laeufen (PLAN.md Abschnitt 8, ZIEL.md).
+Frage: Rechnen Softmax, Kreuzentropie-Gradient (dLogits = p - Ziel, mit Label-Glaettung) und der Verlustwert
+(Protokoll) mit SNAI_I8_GZ_LOGITS=1 ohne Gleitkomma, mindestens so genau wie die alte float32-Fassung (gegen float64
+bei gleichen Logits) und ohne Qualitaetsverlust gegen Stufe 6?
+Aufbau: proj_gz/st7 = Hauptbaum 1a8edde + patch_s0.py + patch_gz.py ed29d20f + cortex_gz.nim 6574ae37, Lib a7d526fe
+(gebaut in bau7, cortex.nim 624d543d). Rauchtest vor diesen Kriterien (nicht gezaehlt): T7 laeuft, T7 mit LOGITS=0 =
+Stufe 6 (39c71b8a).
+Entwurf (cortex_gz.nim, Abschnitt "Stufe 7"): je Position y_k = (max - l_k) * log2(e) in Q32 aus den Zeilenmantissen,
+2^(-y) per Q40-Tabelle (dieselbe wie Stufe 6), p in Q30, dLogits = p - Ziel; Ziele (1-eps, eps/(V-1)) einmal als
+Q30-Konstanten im Modus "naechster" (Ausnahme a). Verlust: -log2(p_tg + 1e-7) in Q32 (p in Q40, log2-Tabelle aus
+Stufe 3), Mittel ganzzahlig, mal ln 2, float32 per Bitbau; gzFwdBwd gibt dieses Mittel zurueck (kein float-Teilen).
+Aktive Nebenmechanismen wie Stufe 6.
+
+K1 Kontrolle (Kurzlauf, isoliert, 2 Faeden): Stufe-7-Lib GANZ=0..6 = 0f79d04c / 47176fa4 / 12e40925 / 6f382e75 /
+   ac0be686 / 8239bb67 / 39c71b8a; GANZ=7 + LOGITS=0 = 39c71b8a; GANZ=6 + LOGITS=1 = GANZ=7; Stufe 7 zweimal gleich,
+   1 Faden = 2 Faeden; grob: GANZ=1 + LOGITS=1 laeuft, Loss +-2 % von GANZ=7.
+K2 Bausteinprobe (SNAI_GZ_KERN=1, GANZ=7, erster Schritt): ce-dlogits und ce-verlust und alle Zeilen der Stufen 2-6
+   unter FE_UPWARD und FE_TONEAREST bytegleich (Tabelle je Lauf neu). Rot 1 (SNAI_GZ_KERN_ROT=1, float32-Rundung in
+   tb[0] der dLogits): ce-dlogits ABWEICHEND. Rot 2 (SNAI_GZ_KERN_ROT=2, Tabellen ohne festen Modus): ce-dlogits
+   ABWEICHEND, matfwd/matbw/norm/adam/quant gleich.
+K3 Genauigkeit bei gleichen Logits (SNAI_GZ_LOGVGL=t, Lesart B), bei t = 1, 150 (Kurzlauf) und 3000 (Segment 0, s1):
+   relL2 dLogits Ganzzahl gegen float64 <= 1e-6; Verlust Ganzzahl gegen float64 rel. <= 1e-6. float32 nur berichtet.
+   Rot (SNAI_GZ_LOGVGL_ROT=1, Referenz um 1e-5 verschoben), t = 1: dLogits > 1e-6 und Verlust rel. > 1e-6.
+K3b Gradienten gegen den alten float32-Pfad (SNAI_GZ_VERGL=1, GANZ=7, erster Schritt; Plausibilitaet): je Tensor
+   relL2 <= 0,05, cos >= 0,995; dazu Loss alt gegen GZ in der VERGL-Zeile berichtet. Rot (SNAI_GZ_VERGL_ROT=1):
+   g_w_o[0] verfehlt.
+K4 Qualitaet: Segment 0, Saaten s1-s3 gepaart, Held-out 300 Fenster; d = (st7 - st6)/st6 <= +2 % in 3 von 3, sonst
+   Haltepunkt. |d| < 10 % ist Gleichstand und das erwartete Ergebnis.
+K5 Messgeraet: Saettigungen, NET2NET-GUARD, STEPS_DONE=5001 in jedem K4-Lauf vor dem Urteil; dazu der Trainings-Loss
+   im Protokoll (jetzt ganzzahlig gebildet) gegen Stufe 6 ansehen (gleiche Groessenordnung, sonst verdaechtig).
+Laufzeit berichtet, kein Kriterium.
+Pruefer (Zweitmeinung 15.11., Code und Aufbau; Gemini ohne Befund): Mistrals Einwaende einzeln nachgerechnet, keiner
+haelt: 'sh = e + 2 skaliert falsch' (y = P * 2^(e-30) reell, in Q32 also P * 2^(e+2)); 'X um 2^36 zu gross'
+(w * 2^22 / (se * 2^-18) = p * 2^40, Q40 wie beabsichtigt); 'tb in Q14' (w * 2^22 / (se * 2^-8) = p * 2^30);
+'se ueberlaeuft' (se <= V * 2^40, bei V < 2^22 unter 2^62); 'Zeile = 0' war Kurzschrift der Frage, nicht Code.
+Urteil: erfuellt = K1-K5. Saaten 3, Regel 3 von 3; bei Uneinigkeit: saatabhaengig, kein Schluss.
+Reichweite: Knirps 96x2, ein Datensatz (Nano-Geschichten), CPU, 2 Faeden.

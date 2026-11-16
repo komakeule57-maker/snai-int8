@@ -1,0 +1,42 @@
+snai/fullint8-st5-rope: Kriterien, festgelegt 2026-11-15 vor den gezaehlten Laeufen (PLAN.md Abschnitt 8, ZIEL.md).
+Frage: Rechnet RoPE vorwaerts (q, k) und rueckwaerts (dq, dk) mit SNAI_I8_GZ_ROPE=1 ohne Gleitkomma, mindestens so
+genau wie die alte float32-Fassung (gegen float64 bei gleichem Eingang) und ohne Qualitaetsverlust gegen Stufe 4?
+Aufbau: proj_gz/st5 = Hauptbaum 1a8edde + patch_s0.py + patch_gz.py ed29d20f (Schalter gzAn) + cortex_gz.nim (Stufe 5,
+md5 und Lib beim Start der Proben in den Messbuch-Rezepten), Schalter je Stufe (Reihe snai/fullint8-schalter).
+Entwurf: cos/sin(pos * base^(-2j/hs)) als Q30-Tabelle ctx x hs/2, einmal beim ersten Aufruf in float64 im Modus
+"naechster" (erlaubte Ausnahme a; base = ropeBase wie im alten Weg). Drehung je Paar (v0 c - v1 s, v0 s + v1 c) in
+int64, rueckwaerts mit -s; Zeile neu normiert (Exponent e - 30). |v| < 2^30, |c|,|s| <= 2^30 => Summe < 2^61.
+Unterschied zum alten Weg, bekannt vor der Messung: der alte Weg rechnet theta = pos * freq in float32 (Fehler bis
+~pos * 6e-8 rad, bei pos 255 ~1,5e-5); die Tabelle trifft das exakte theta. Die float32-Fassung kann deshalb K3 selbst
+verfehlen; sie wird nur berichtet.
+Aktive Nebenmechanismen wie Stufe 4 (Revival aus, Clip im ganzzahligen Adam, NET2NET-GUARD in K5 gezaehlt).
+
+K1 Kontrolle (Kurzlauf kurz_seg0.txt, isoliert per probe_iso.sh, 2 Faeden): mit der Stufe-5-Lib SNAI_I8_GANZ=0..4 =
+   0f79d04c / 47176fa4 / 12e40925 / 6f382e75 / ac0be686 (Bezugswerte; Stufe 4 gleich => die st4-Laeufe der Reihe
+   snai/fullint8-st4-norm gelten als Vergleichsarm); SNAI_I8_GANZ=5 SNAI_I8_GZ_ROPE=0 = ac0be686 (Schalter wirkt);
+   Stufe 5 zweimal gleich, 1 Faden = 2 Faeden.
+K2 Bausteinprobe (SNAI_GZ_KERN=1, SNAI_I8_GANZ=5, erster Schritt): jeder Aufruf rope-fwd (4: q, k je Schicht) und
+   rope-bw (4: dq, dk je Schicht) und alle Zeilen der Stufen 2-4 unter FE_UPWARD und FE_TONEAREST bytegleich.
+   Die Q30-Tabelle wird in der Probe vor JEDEM der beiden Laeufe neu berechnet (sonst saehe die Probe nur eine
+   einmal gebaute Tabelle). Rot 1 (SNAI_GZ_KERN_ROT=1, float32-Multiplikation in tb[0] je Zeile): mindestens eine
+   rope-fwd- und eine rope-bw-Zeile "ABWEICHEND". Rot 2 (SNAI_GZ_KERN_ROT=2, nur die Tabelle: ohne festen Modus und
+   mit float32-theta gebaut): mindestens eine rope-fwd- und eine rope-bw-Zeile "ABWEICHEND", Matmul-/Norm-/Adam-Zeilen
+   dabei "gleich".
+K3 Genauigkeit bei gleichem Eingang (SNAI_GZ_ROPEVGL=t, Lesart B): in jedem der 8 Aufrufe relL2 Ganzzahl gegen
+   float64 <= 1e-6, bei t = 1 und t = 150 (Kurzlauf) und t = 3000 (Segment 0, Saat s1). float32 nur berichtet.
+   Rot (SNAI_GZ_ROPEVGL_ROT=1, Referenz um genau 1e-5 relativ verschoben), t = 1: jede Ganzzahl-Zeile > 1e-6.
+K3b Gradienten gegen den alten float32-Pfad trainStepI8Batched (SNAI_GZ_VERGL=1, SNAI_I8_GANZ=5, erster Schritt;
+   Plausibilitaet): je Tensor relL2 <= 0,05 und Kosinus >= 0,995. Rot (SNAI_GZ_VERGL_ROT=1): g_w_o[0] verfehlt.
+K4 Qualitaet: Segment 0 (5.001 Schritte), Saaten s1-s3 gepaart (gleicher Armname), Held-out 300 Fenster;
+   d = (st5 - st4)/st4 <= +2 % in 3 von 3, sonst Haltepunkt. |d| < 10 % ist Gleichstand und das erwartete Ergebnis.
+K5 Messgeraet: in jedem K4-Lauf vor dem Urteil: Saettigungen (> 0 verdaechtig), NET2NET-GUARD (verdaechtig),
+   STEPS_DONE=5001.
+Laufzeit berichtet, kein Kriterium.
+Pruefer (Zweitmeinung 15.11., Gemini/Mistral; Gemini ohne Befund): uebernommen: 'Tabelle nur einmal gebaut, Probe
+sieht Modusabhaengigkeit nicht' (eigene Folgerung, angestossen durch Mistral Punkte 2 und 3) -> Neuberechnung je Lauf in K2 und Rot 2. Verworfen nach
+Quelltext: 'FE_UPWARD nicht portabel' (Probe laeuft auf x86, ist Pruefgeraet, kein Laufzeitpfad); 'Race beim
+Tabellenbau' (gzRope laeuft nur im seriellen Teil von gzFwdBwd, keine OpenMP-Schleife); 'Normierungsexponent offen'
+(gzPutRow normiert, Basis e - 30 wegen Q30); 'ctx variabel' (ctx = state.ctxSize fest je Modell, Tabelle neu bei
+Aenderung von hs oder ctx).
+Urteil: erfuellt = K1-K5. Saaten 3, Regel 3 von 3; bei Uneinigkeit: saatabhaengig, kein Schluss.
+Reichweite: Knirps 96x2, ein Datensatz (Nano-Geschichten), CPU, 2 Faeden.

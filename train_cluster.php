@@ -445,7 +445,25 @@ function average_models_stream(array $worker_models, string $output_path) {
         $first_magic = rtrim(fread($fp_probe, 8), "\0");
         fclose($fp_probe);
     }
-    if (snai_is_int8_magic((string)$first_magic)) {
+    // FULLINT8 Stufe 10: SNAI_V8 mit einem Worker = Kopie (merge_v6_models kopiert bei einer Datei); mehrere Worker
+    // mittelt nur der float32-Weg fuer V6/V7 - fuer V8 gibt es keinen, also laut abbrechen statt in den V5-Pfad zu fallen.
+    if ((string)$first_magic === SNAI_MAGIC_V8 && count($worker_models) !== 1) {
+        // FULLINT8 Stufe 11 (2026-11-16): ganzzahliger Merge, nur mit Schalter (fragt libcortex.so); sonst wie bisher.
+        if (!snai_gz_merge_an()) {
+            echo "🚨 [Fatal] SNAI_V8-Checkpoints mehrerer Worker lassen sich (noch) nicht mitteln - Abbruch.\n";
+            exit(1);
+        }
+        if (!merge_v8_models($worker_models, $output_path)) {
+            echo "🚨 [Fatal] merge_v8_models() (Stufe 11) fehlgeschlagen.\n";
+            exit(1);
+        }
+        propagate_head_sidecar($worker_models[0], $output_path);
+        propagate_growth_sidecar($worker_models[0], $output_path);
+        echo "[Merge] SNAI_V8 ganzzahlig gemittelt (Stufe 11): int8-Gewichte, 8-Bit-Momente, float32-Tensoren.\n";
+        merge_worker_loras($worker_models, $output_path);
+        return;
+    }
+    if (snai_is_int8_magic((string)$first_magic) || (string)$first_magic === SNAI_MAGIC_V8) {
         if (!merge_v6_models($worker_models, $output_path)) {
             echo "🚨 [Fatal] merge_v6_models() (INT8) fehlgeschlagen.\n";
             exit(1);
@@ -1166,7 +1184,7 @@ for ($epoch = $start_epoch; $epoch <= $max_epochs; $epoch++) {
     $ho_probe = @fopen($checkpoint_state, 'rb');
     $ho_magic = $ho_probe ? rtrim((string)fread($ho_probe, 8), "\0") : '';
     if ($ho_probe) fclose($ho_probe);
-    $ist_int8 = snai_is_int8_magic($ho_magic);
+    $ist_int8 = snai_is_int8_ladbar($ho_magic);   // FULLINT8 Stufe 10: V8 misst eval_held_out_i8.php nativ
 
     if ($best_holdout !== false && $best_holdout !== '') {
         if (!is_dir($best_holdout) || count((array)glob(rtrim($best_holdout, '/') . '/*.txt')) === 0) {

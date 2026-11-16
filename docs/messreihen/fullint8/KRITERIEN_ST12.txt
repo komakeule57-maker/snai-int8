@@ -1,0 +1,62 @@
+snai/fullint8-st12-gfrei: Kriterien, festgelegt 2026-11-16 vor den gezaehlten Laeufen (Entscheidung des Autors 16.11.,
+interne Notiz: die ungenutzten float32-Gradientenpuffer g_* "nur bei Bedarf anlegen", als eigener Schritt mit
+Bytegleichheits-Probe und Speichermessung).
+Frage: Legt die Engine mit SNAI_I8_GZ_GFREI=1 (bzw. SNAI_I8_GANZ=12) die float32-Gradientenpuffer der Matrizen nicht mehr
+an (bzw. gibt sie im Genesis-Weg frei), ohne dass sich am Training irgendein Byte aendert, sinkt dabei der Speicher, und
+lehnt ein Schritt, der die Puffer braeuchte, laut ab statt in einen Nullzeiger zu laufen?
+
+Aufbau: st12 = st11 (Stufe 11, siehe KRITERIEN_ST11.txt) + patch_gfrei.py 6c305248 auf cortex.nim (-> e850a14d) +
+cortex_gz.nim ae179d20 (= 06f2e773 + Stufe 12), Lib 024c34f6 (bau13). PHP unveraendert gegenueber st11.
+Entwurf: Stufe 12 braucht die Stufen 2 (MATMUL), 3 (ADAM) und 8 (REST) - mit ihnen liest und schreibt der Schritt
+g_embeddings, g_w_out und g_w_q ... g_w_down nicht mehr (Audit 16.11.: Nullen vor dem Schritt in cortexTrainStepI8Roh;
+gzMatBw nur bei Stufe 2 aus; Kleber nur bei Stufe 2/3/8 aus; gzEmbZusammen liest g_embeddings nur bei Stufe 8 aus; mit
+Stufe 3 kehrt der Schritt vor Zusammenfuehren, Abholen, Clip und altem Adam zurueck). Lader (cortex_load_stream_i8):
+initMA legt sie mit Zeilen/Spalten, aber ohne Daten an. Genesis-Weg (SNAI_V5, cortex_quantize_from_fp32): freigegeben in
+gzInit im ersten Schritt. Gain-Gradienten bleiben. Aus (Warnung), wenn eine der drei Stufen aus ist, die Karte laeuft oder
+SNAI_GZ_VERGL/ADAMVGL/RESTVGL gesetzt ist. Sperre im Schritt: fehlen die Puffer und gilt gzGFrei() nicht (oder LoRA),
+FATAL und Rueckgabe -1. Rot-Schalter der Sperre: SNAI_GZ_GFREI_ROT=1. Werkzeug mess_rss.py (ru_maxrss ueber os.wait4,
+groesster Wert unter allen Nachkommen; ersetzt /usr/bin/time, das auf rechner-a fehlt).
+Rauchtest vor diesen Kriterien (nicht gezaehlt, 1 Faden): Kurzlauf GANZ=11 = GANZ=12 = 759ba426 (Genesis-Weg, Meldung
+"freigegeben 2043648 Bytes"); Fortsetzung aus K1_g11.snai (V8) GANZ=11 = GANZ=12 = 389a20ff (Meldung "nicht angelegt
+2043648 Bytes" = 4 B x (366.048 Gewichte + 144.864 w_out-Gradient)); maxrss Fortsetzung 75100 -> 73772 KB, Genesis
+73936 -> 73780 KB; ROT=1 -> FATAL, rc 1; mess_rss sieht 50 MB Zusatzspeicher (63040 gegen 11780 KB).
+
+K1 Schalter aus bytegleich (st12, Lib 024c34f6, isoliert, probe_iso_basis): Kurzlauf 1 Worker GANZ=0 / 9 / 10 / 11 =
+   0f79d04c / 201f5494 / 759ba426 / 759ba426; 2 Worker GANZ=11 = 36fba098; Fortsetzung aus K1_g11.snai GANZ=11 = 389a20ff.
+K2 an bytegleich: GANZ=12 Kurzlauf = 759ba426, 2 Worker = 36fba098, Fortsetzung = 389a20ff; Segment 0 ganz (5.001 Schritte,
+   2 Faeden) GANZ=12 in naechster und auf (SNAI_FP_RUNDUNG + SNAI_GZ_IO_RUNDUNG) = 6a544467 (Rundungsprobe der Schlussprobe,
+   GANZ=10). Dazu je Lauf die Meldung "freigegeben" (Genesis) bzw. "nicht angelegt" (Fortsetzung) mit 2043648 Bytes.
+K3 Abhaengigkeit laut: GANZ=12 + SNAI_I8_GZ_ADAM=0 -> Warnung "braucht die Stufen 2 (MATMUL), 3 (ADAM) und 8 (REST)",
+   keine Stufe-12-Meldung, Ergebnis = GANZ=11 + ADAM=0 (gleicher Kurzlauf); GANZ=12 + SNAI_GZ_ADAMVGL=1 -> Warnung "aus
+   (SNAI_GZ_ADAMVGL rechnet den float-Weg daneben)", Puffer bleiben, rc 0.
+K4 Sperre (Rot): SNAI_GZ_GFREI_ROT=1 mit GANZ=12 im Fortsetzungs- und im Genesis-Weg -> Meldung "FATAL: die
+   float-Gradientenpuffer fehlen", kein Checkpoint, rc != 0. Kontrolle: derselbe Aufruf mit GANZ=11 (Puffer da) laeuft
+   durch (die Sperre greift nur, wenn sie fehlen).
+K5 Speicher (mess_rss.py, Fortsetzungs-Kurzlauf, 1 Faden, je Arm 3 Wiederholungen, abwechselnd): bestanden, wenn jeder
+   Lauf mit GANZ=12 unter jedem Lauf mit GANZ=11 liegt (die Spannen ueberlappen nicht). Berichtet: Mittel der Differenz
+   gegen die erwarteten 1.996 KB (2043648 Bytes), dazu derselbe Vergleich im Genesis-Weg (dort liegt die Spitze beim
+   Quantisieren der float-Genesis, erwartet wenig Wirkung; kein Kriterium). Rot des Messgeraets: mess_rss mit und ohne
+   50 MB Zusatzspeicher.
+NACHTRAG 16.11. ~05:00, nach dem ersten gezaehlten Lauf (Lib 024c34f6, verworfen, Logs log/st12_lauf1/): K4 im
+   Genesis-Weg VERFEHLT - die Sperre meldete FATAL, gab aber nur -1 zurueck; train_worker.php wertet -1 nicht aus und
+   trainierte nach dem ersten Schritt still weiter (rc 0, Checkpoint 563a6f3a). Reparaturversuch (einziger): die Sperre
+   beendet den Prozess (quit(1)), patch_gfrei.py 1166990b, cortex.nim 4e192007, Lib dca24a87; alle Proben werden damit
+   neu gefahren (Lauf 2), die Kriterien K1-K5 bleiben im Wortlaut. Ausserdem zeigte Lauf 1, dass ru_maxrss ueber den
+   ganzen probe_iso_basis-Baum (rsync, Master, Worker) zwischen Wiederholungen um bis zu 3 MB streut, mehr als der
+   erwartete Effekt. Deshalb ZUSAETZLICH, vor Lauf 2 festgelegt:
+K5b Speicher ein Prozess (berichtet neben K5, gleich gewichtet im Urteil): mess_rss.py um v8_rundweg.php (laedt wie
+   train_worker.php nativ, speichert sofort), Eingabe K1_g11.snai, GANZ=11 gegen GANZ=12, 3 gegen 3 abwechselnd.
+   Bestanden: jeder GANZ=12-Lauf unter jedem GANZ=11-Lauf und Mittel der Differenz zwischen 50 und 150 % der erwarteten
+   1.996 KB. Ausgang beider Lesungen (K5, K5b) wird nebeneinander berichtet; verfehlt eine, ist K5 nicht erfuellt.
+Hochrechnung (berichtet, nicht gemessen): 4 Byte je Matrixgewicht plus w_out-Gradient; bei prod512b-Geometrie aus der
+Geometrie ausgerechnet, kein prod512b-Lauf.
+Pruefer (Zweitmeinung 16.11., Aufbau): Gemini und Mistral 'Rauchtest spart 1.328 statt 1.996 KB, die Erwartung ist
+widerlegt' (berechtigt als Beobachtung; K5 verlangt nur, dass jeder Lauf darunter liegt, und berichtet die Differenz gegen
+die Erwartung; Deutung, nicht gemessen: der Speicherverwalter legt die Puffer im Lauf ohne Stufe 12 teils in schon
+belegte, freigegebene Bloecke des Ladens, so dass ihr Wegfall weniger als 4 B je Gewicht vom Hoechststand abzieht).
+Mistral 'Warnung in K3 widerspricht der Sperre' (verschiedene Faelle: die Warnung heisst, Stufe 12 schaltet sich ab und
+die Puffer werden angelegt; die Sperre greift nur, wenn sie fehlen und doch gebraucht wuerden); 'Genesis-Weg legt doch an'
+(ja, als Grenze vermerkt: dort wird im ersten Schritt freigegeben, Meldung "freigegeben"); 'Zugriff auf nil ungeprueft'
+(Audit oben; K2 faehrt dazu ein ganzes Segment und die Mehrworker-Variante, ein Zugriff waere ein Absturz).
+Urteil: erfuellt = K1-K5. Deterministisch, eine Saat (s1) fuer Bytegleichheit; K5 3 gegen 3 Wiederholungen.
+Reichweite: Knirps 96x2 gebunden, CPU, rechner-a; LoRA und Karte nur ueber den Code (dort bleibt Stufe 12 aus bzw. sperrt).

@@ -58,6 +58,18 @@ define('SNAI_DTYPE_INT8', 1);
 define('SNAI_MAGIC_V7', 'SNAI_V7');
 define('SNAI_HEADER_SIZE_V7', 36); // V6-Header + 4 Bytes flags
 define('SNAI_FLAG_TIED_EMBEDDINGS', 1);
+// FULLINT8 Stufe 10 (2026-11-15): SNAI_V8 = Kopf wie V7 (Flags-Feld immer, Bit 0 = Bindung), Rumpf wie V6/V7 bis auf die
+// Momente der int8-Matrizen: [uint16 Zeilen][float32 je Zeile][uint8 Codes] je Moment. Geschrieben nur mit
+// SNAI_I8_GZ_CKPT=1. Bewusst NICHT in snai_is_int8_magic(): wer Momente als float32 liest, lehnt V8 so weiter ab.
+define('SNAI_MAGIC_V8', 'SNAI_V8');
+/** true fuer Formate, die cortex_load_stream_i8() laden kann (V6, V7, V8). Nur fuer Aufrufer, die nativ ueber Nim laden. */
+function snai_is_int8_ladbar(string $magic): bool {
+    return snai_is_int8_magic($magic) || $magic === SNAI_MAGIC_V8;
+}
+/** Ist eine Datei dieses Formats gebunden? V7 immer, V8 nach Flag-Bit 0, V6 nie. */
+function snai_datei_gebunden(string $magic, int $flags): bool {
+    return $magic === SNAI_MAGIC_V7 || ($magic === SNAI_MAGIC_V8 && ($flags & SNAI_FLAG_TIED_EMBEDDINGS) !== 0);
+}
 
 /**
  * EMB-EINGANG (2026-11-03, messbuch snai/engine-emb-eingang): Bit 1 = Embedding-Eingangsfaktor. Die Engine
@@ -630,6 +642,24 @@ function load_model_header_any(string $filepath): ?array {
         return $h;
     }
 
+    if ($magic === SNAI_MAGIC_V8) {
+        $data = fread($fp, 28); // wie V7: 20 Bytes Parameter + 4 dtype_version + 4 flags
+        fclose($fp);
+        if (strlen($data) !== 28) {
+            echo "🚨 [I/O] Fatal: Unvollständiger V8-Header in $filepath\n";
+            return null;
+        }
+        $h = unpack('Vvocab_size/Vhidden_dim/Vffn_dim/Vctx_size/Vnum_layers/Vdtype_version/Vflags', $data);
+        $h['magic'] = SNAI_MAGIC_V8;
+        $h['header_size'] = SNAI_HEADER_SIZE_V7;
+        $fl = (int)$h['flags'];
+        if (($fl & ~SNAI_V7_FLAGS_BEKANNT) !== 0 || (($fl & SNAI_FLAG_EMB_EINGANG) && !($fl & SNAI_FLAG_TIED_EMBEDDINGS))) {
+            echo "🚨 [I/O] Fatal: SNAI_V8-Flags $fl unbekannt oder Bit 1 ohne Bit 0 in $filepath\n";
+            return null;
+        }
+        return $h;
+    }
+
     fclose($fp);
     echo "🚨 [I/O] Fatal: Unbekanntes Format in $filepath (Magic: $magic)\n";
     return null;
@@ -1105,7 +1135,7 @@ function save_model_stream_i8(array $state, string $filepath): bool {
 function snai_v6_expected_sizes(int $vocab, int $dim, int $ffn, int $layers,
                                 int $flags = 0, ?string $magic = null): array {
     $magic = $magic ?? (($flags & SNAI_FLAG_TIED_EMBEDDINGS) ? SNAI_MAGIC_V7 : SNAI_MAGIC_V6);
-    $headerSize = ($magic === SNAI_MAGIC_V7) ? SNAI_HEADER_SIZE_V7 : SNAI_HEADER_SIZE_V6;
+    $headerSize = ($magic === SNAI_MAGIC_V7 || $magic === SNAI_MAGIC_V8) ? SNAI_HEADER_SIZE_V7 : SNAI_HEADER_SIZE_V6;
 
     // Bei gesetztem Tying-Flag fehlt der w_out-Block komplett - snai_global_types()
     // ist die einzige Stelle, die das entscheidet.
@@ -1123,7 +1153,10 @@ function snai_v6_expected_sizes(int $vocab, int $dim, int $ffn, int $layers,
         $weights += in_array($t, SNAI_INT8_TENSOR_TYPES, true)
             ? (2 + $rows * 4 + $n)
             : ($n * 4);
-        $adam += 2 * $n * 4;   // m und v, laut Design-Entscheidung #2 immer float32
+        // m und v: V6/V7 immer float32 (Design-Entscheidung #2); V8 bei int8-Tensoren wie die Gewichte (Code + Skala)
+        $adam += ($magic === SNAI_MAGIC_V8 && in_array($t, SNAI_INT8_TENSOR_TYPES, true))
+            ? 2 * (2 + $rows * 4 + $n)
+            : 2 * $n * 4;
     }
     $base = $headerSize + $weights;
     return [$base, $base + $adam + 4];
@@ -1131,6 +1164,12 @@ function snai_v6_expected_sizes(int $vocab, int $dim, int $ffn, int $layers,
 
 function load_v6_model_full(string $filepath): ?array {
     $header = load_model_header_any($filepath);
+    // FULLINT8 Stufe 10: V8 traegt die Momente als 8-Bit-Code, dieser Leser parst float32 - laut ablehnen statt still null.
+    if ($header !== null && $header['magic'] === SNAI_MAGIC_V8) {
+        echo "🚨 [I/O] load_v6_model_full(): $filepath ist SNAI_V8 (8-Bit-Momente) - dieser Leser kann es nicht, nur der Nim-Lader.
+";
+        return null;
+    }
     if ($header === null || !snai_is_int8_magic($header['magic'])) return null;
 
     $vocab = $header['vocab_size'];
@@ -1349,6 +1388,203 @@ function merge_v6_models(array $paths, string $output_path): bool {
     flock($out, LOCK_UN);
     fclose($out);
     foreach ($fps as $fp) fclose($fp);
+    return true;
+}
+
+// FULLINT8 Stufe 11 (2026-11-16): ganzzahliger Merge mehrerer Worker fuer SNAI_V8. Gerechnet in libcortex.so
+// (cortex_gz.nim, cortex_gz_merge_*), PHP liest und schreibt nur Bytes. Eigenes cdef(): eine aeltere libcortex.so ohne
+// die Symbole laesst sich weiter laden, dann gibt es eben keinen Merge (laut).
+function snai_gz_merge_ffi(): ?FFI {
+    static $ffi = false;
+    if ($ffi === false) {
+        $ffi = null;
+        if (class_exists('FFI')) {
+            try {
+                $ffi = FFI::cdef("
+                    int cortex_gz_merge_an(void);
+                    int cortex_gz_merge_i8(int n, int rows, int cols, void** qs, void** ss, void* q_out, void* s_out);
+                    int cortex_gz_merge_mom(int n, int rows, int cols, int vorzeichen, void** cs, void** ss,
+                                            void* c_out, void* s_out);
+                    int cortex_gz_merge_f32(int n, long long cnt, void** xs, void* out);
+                    void cortex_gz_merge_bericht(void);
+                ", getenv('SNAI_CORTEX_LIB') ?: (__DIR__ . '/libcortex.so'));
+            } catch (\Throwable $e) {
+                $ffi = null;
+            }
+        }
+    }
+    return $ffi;
+}
+
+/** Stufe 11 an? Die Lib entscheidet (dieselben Schalter und Abhaengigkeiten wie im Worker). */
+function snai_gz_merge_an(): bool {
+    $f = snai_gz_merge_ffi();
+    return $f !== null && $f->cortex_gz_merge_an() === 1;
+}
+
+/** void*[n] auf Kopien der Strings; $halter haelt die Puffer am Leben. */
+function snai_gz_zeiger(FFI $ffi, array $bufs, array &$halter): FFI\CData {
+    $n = count($bufs);
+    $feld = $ffi->new("void*[{$n}]");
+    foreach (array_values($bufs) as $i => $b) {
+        $len = strlen($b);
+        $c = $ffi->new("char[" . max(1, $len) . "]");
+        if ($len > 0) FFI::memcpy($c, $b, $len);
+        $halter[] = $c;
+        $feld[$i] = FFI::cast("void*", FFI::addr($c[0]));
+    }
+    return $feld;
+}
+
+/**
+ * Mittelt N SNAI_V8-Checkpoints (Stufe 11) Tensor fuer Tensor, ganzzahlig: int8-Gewichte und 8-Bit-Momente als
+ * Code + Zeilenskala, float32-Tensoren (Gains und ihre Momente) elementweise; adam_t = Maximum; Kopf und Flags wie die
+ * Eingaben. Schreibt nur bei Erfolg (sonst wird die Ausgabe entfernt).
+ */
+function merge_v8_models(array $paths, string $output_path): bool {
+    if (empty($paths)) {
+        echo "🚨 [I/O] merge_v8_models(): keine Eingabedateien.\n";
+        return false;
+    }
+    if (count($paths) === 1) return copy($paths[0], $output_path);
+    $ffi = snai_gz_merge_ffi();
+    if ($ffi === null) {
+        echo "🚨 [I/O] merge_v8_models(): libcortex.so kennt den ganzzahligen Merge (Stufe 11) nicht.\n";
+        return false;
+    }
+    if (count($paths) > 64) {
+        echo "🚨 [I/O] merge_v8_models(): hoechstens 64 Eingaben (" . count($paths) . ").\n";
+        return false;
+    }
+    $heads = [];
+    foreach ($paths as $p) {
+        $h = load_model_header_any($p);
+        if ($h === null || $h['magic'] !== SNAI_MAGIC_V8) {
+            echo "🚨 [I/O] merge_v8_models(): $p ist kein SNAI_V8-Checkpoint.\n";
+            return false;
+        }
+        $heads[] = $h;
+    }
+    $first = $heads[0];
+    foreach ($heads as $h) {
+        if ($h['vocab_size'] !== $first['vocab_size'] || $h['hidden_dim'] !== $first['hidden_dim']
+            || $h['ffn_dim'] !== $first['ffn_dim'] || $h['num_layers'] !== $first['num_layers']
+            || $h['ctx_size'] !== $first['ctx_size']) {
+            echo "🚨 [I/O] merge_v8_models(): inkonsistente Modell-Geometrie.\n";
+            return false;
+        }
+        if ((int)$h['flags'] !== (int)$first['flags']) {
+            echo "🚨 [I/O] merge_v8_models(): Modelle mit verschiedenen Flags (gebunden/ungebunden) nicht mitteln.\n";
+            return false;
+        }
+    }
+    $vocab = $first['vocab_size']; $dim = $first['hidden_dim']; $ffn = $first['ffn_dim'];
+    $layers = $first['num_layers']; $flags = (int)$first['flags'];
+    if (($fehler = snai_v7_flags_fehler($flags)) !== null) {
+        echo "🚨 [I/O] Fatal: $fehler - $output_path nicht geschrieben.\n";
+        return false;
+    }
+    [, $sizeAdam] = snai_v6_expected_sizes($vocab, $dim, $ffn, $layers, $flags, SNAI_MAGIC_V8);
+    foreach ($paths as $p) {
+        $actual = (int)filesize($p);
+        if ($actual !== $sizeAdam) {
+            echo "🚨 [I/O] merge_v8_models(): " . basename($p) . " hat $actual Bytes, erwartet $sizeAdam (SNAI_V8 mit Adam).\n";
+            return false;
+        }
+    }
+
+    $fps = [];
+    foreach ($paths as $i => $p) {
+        $fps[$i] = fopen($p, 'rb');
+        fseek($fps[$i], $heads[$i]['header_size']);
+    }
+    $lies = function($fp, int $len) {
+        $b = $len > 0 ? fread($fp, $len) : '';
+        if ($b === false || strlen($b) !== $len) throw new RuntimeException("merge_v8_models(): Lesefehler ($len Bytes)");
+        return $b;
+    };
+    $N = count($paths);
+
+    $dir = dirname($output_path);
+    if (!is_dir($dir) && $dir !== '.') @mkdir($dir, 0777, true);
+    $out = fopen($output_path, 'wb');
+    if (!$out) return false;
+    flock($out, LOCK_EX);
+    // Kopf wie cortex_save_stream_i8() ihn fuer SNAI_V8 schreibt (Flags-Feld immer).
+    fwrite($out, str_pad(SNAI_MAGIC_V8, 8, "\0"));
+    fwrite($out, pack('VVVVV', $vocab, $dim, $ffn, $first['ctx_size'], $layers));
+    fwrite($out, pack('V', SNAI_DTYPE_INT8));
+    fwrite($out, pack('V', $flags));
+
+    $types = snai_global_types($flags);
+    for ($l = 0; $l < $layers; $l++) foreach (snai_layer_types() as $t) $types[] = $t;
+
+    // Ein Block [uint16 Zeilen][Zeilenskalen float32][Codes] je Datei lesen
+    $block = function($type, int $rows, int $n) use ($fps, $lies) {
+        $cs = []; $ss = [];
+        foreach ($fps as $i => $fp) {
+            $count = unpack('v', $lies($fp, 2))[1];
+            if ($count !== $rows) throw new RuntimeException("merge_v8_models(): $type hat $count Skalen, erwartet $rows");
+            $ss[$i] = $lies($fp, $rows * 4);
+            $cs[$i] = $lies($fp, $n);
+        }
+        return [$cs, $ss];
+    };
+    try {
+        foreach ($types as $type) {
+            [$rows, $cols] = snai_tensor_shape($type, $vocab, $dim, $ffn);
+            $n = $rows * $cols;
+            if (in_array($type, SNAI_INT8_TENSOR_TYPES, true)) {
+                foreach (['w', 'm', 'v'] as $teil) {
+                    [$cs, $ss] = $block($type, $rows, $n);
+                    $halter = [];
+                    $pc = snai_gz_zeiger($ffi, $cs, $halter);
+                    $ps = snai_gz_zeiger($ffi, $ss, $halter);
+                    $co = $ffi->new("char[{$n}]");
+                    $so = $ffi->new("char[" . ($rows * 4) . "]");
+                    $rc = ($teil === 'w')
+                        ? $ffi->cortex_gz_merge_i8($N, $rows, $cols, FFI::cast("void**", FFI::addr($pc[0])),
+                            FFI::cast("void**", FFI::addr($ps[0])), FFI::addr($co[0]), FFI::addr($so[0]))
+                        : $ffi->cortex_gz_merge_mom($N, $rows, $cols, $teil === 'm' ? 1 : 0,
+                            FFI::cast("void**", FFI::addr($pc[0])), FFI::cast("void**", FFI::addr($ps[0])),
+                            FFI::addr($co[0]), FFI::addr($so[0]));
+                    if ($rc !== 0) throw new RuntimeException("merge_v8_models(): $type/$teil abgelehnt (Rueckgabe $rc: "
+                        . ($rc === 2 ? "Skala NaN/Inf/negativ" : "Argumente") . ")");
+                    fwrite($out, pack('v', $rows) . FFI::string($so, $rows * 4));
+                    fwrite($out, FFI::string($co, $n));
+                    unset($cs, $ss, $halter, $pc, $ps, $co, $so);
+                }
+            } else {
+                foreach (['w', 'm', 'v'] as $teil) {
+                    $ws = [];
+                    foreach ($fps as $i => $fp) $ws[$i] = $lies($fp, $n * 4);
+                    $halter = [];
+                    $px = snai_gz_zeiger($ffi, $ws, $halter);
+                    $o = $ffi->new("char[" . ($n * 4) . "]");
+                    $rc = $ffi->cortex_gz_merge_f32($N, $n, FFI::cast("void**", FFI::addr($px[0])), FFI::addr($o[0]));
+                    if ($rc !== 0) throw new RuntimeException("merge_v8_models(): $type/$teil abgelehnt (Rueckgabe $rc: "
+                        . ($rc === 2 ? "NaN/Inf" : "Argumente") . ")");
+                    fwrite($out, FFI::string($o, $n * 4));
+                    unset($ws, $halter, $px, $o);
+                }
+            }
+        }
+        $adam_t = 0;
+        foreach ($fps as $fp) $adam_t = max($adam_t, unpack('V', $lies($fp, 4))[1]);
+        fwrite($out, pack('V', $adam_t));
+        foreach ($fps as $fp) {
+            if (fread($fp, 1) !== '') throw new RuntimeException("merge_v8_models(): Daten hinter adam_t");
+        }
+    } catch (RuntimeException $e) {
+        echo "🚨 [I/O] " . $e->getMessage() . "\n";
+        flock($out, LOCK_UN); fclose($out); @unlink($output_path);
+        foreach ($fps as $fp) fclose($fp);
+        return false;
+    }
+    flock($out, LOCK_UN);
+    fclose($out);
+    foreach ($fps as $fp) fclose($fp);
+    if (getenv('SNAI_GZ_MERGEVGL') === '1') $ffi->cortex_gz_merge_bericht();
     return true;
 }
 
